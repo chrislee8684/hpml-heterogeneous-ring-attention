@@ -38,16 +38,21 @@ def main():
     parser.add_argument("--dtype", type=str, default="float16")
     args = parser.parse_args()
     
-    # Determine actual GPU being used 
+    # Determine actual GPU being used
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
     if visible_devices and visible_devices.isdigit():
         actual_gpu = int(visible_devices)
     else:
         actual_gpu = args.device
     
+    # Check MPS
+    mps_pct = os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "100")
+    print(f"MPS Thread Percentage: {mps_pct}%")
+    
     # Set memory limit
     if args.mem_fraction < 1.0:
         torch.cuda.set_per_process_memory_fraction(args.mem_fraction, device=args.device)
+        print(f"[mem] set_per_process_memory_fraction({args.mem_fraction}) on cuda:{args.device}")
     
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.cuda.set_device(args.device)
@@ -55,12 +60,15 @@ def main():
     dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     dtype = dtype_map[args.dtype]
     
+    print(f"[Device {args.device}] Setting up {args.m}x{args.k} @ {args.k}x{args.n} torch.{args.dtype}")
+    
     # Run benchmark
     elapsed, tflops = benchmark_gemm(args.m, args.n, args.k, args.device, args.iters, args.warmup, dtype)
     
     # Memory info
     free, total = torch.cuda.mem_get_info(device=args.device)
-    print(f"\nGPU {actual_gpu} Benchmark Results:")
+    
+    print(f"\n===== GPU {actual_gpu} Results =====")
     print(f"Time: {elapsed:.3f}s")
     print(f"Throughput: {tflops:.2f} TFLOP/s")
     print(f"Avg per iteration: {elapsed/args.iters*1000:.2f} ms")

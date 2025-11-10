@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Config
-MPS_PERCENT_GPU1=30      # GPU 1 compute limit 
-MEM_FRACTION_GPU1=0.10   # GPU 1 memory limit 
+MPS_PERCENT_GPU1=30      # GPU 1 compute limit
+MEM_FRACTION_GPU1=0.10   # GPU 1 memory limit
 SIZE=8192                # Matrix size
 ITERS=200                # Iterations
 
@@ -19,7 +19,6 @@ export CUDA_MPS_LOG_DIRECTORY="${CUDA_MPS_LOG_DIRECTORY:-/tmp/mps_$USER}"
 mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
 
 if ! pgrep -u "$USER" -f "nvidia-cuda-mps-control -d" >/dev/null 2>&1; then
-    echo "Starting MPS daemon..."
     nvidia-cuda-mps-control -d
     sleep 2
 fi
