@@ -1,0 +1,53 @@
+	[4mGPU0	GPU1	NIC0	NIC1	NIC2	NIC3	NIC4	NIC5	NIC6	NIC7	NIC8	NIC9	CPU Affinity	NUMA Affinity	GPU NUMA ID[0m
+GPU0	 X 	NV12	NODE	PXB	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE	0	0		N/A
+GPU1	NV12	 X 	NODE	NODE	NODE	PXB	NODE	NODE	NODE	NODE	NODE	NODE	0	0		N/A
+NIC0	NODE	NODE	 X 	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE				
+NIC1	PXB	NODE	NODE	 X 	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE				
+NIC2	NODE	NODE	NODE	NODE	 X 	NODE	NODE	NODE	NODE	NODE	NODE	NODE				
+NIC3	NODE	PXB	NODE	NODE	NODE	 X 	NODE	NODE	NODE	NODE	NODE	NODE				
+NIC4	NODE	NODE	NODE	NODE	NODE	NODE	 X 	NODE	NODE	NODE	PIX	PIX				
+NIC5	NODE	NODE	NODE	NODE	NODE	NODE	NODE	 X 	NODE	NODE	NODE	NODE				
+NIC6	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE	 X 	NODE	NODE	NODE				
+NIC7	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE	NODE	 X 	NODE	NODE				
+NIC8	NODE	NODE	NODE	NODE	NODE	NODE	PIX	NODE	NODE	NODE	 X 	PIX				
+NIC9	NODE	NODE	NODE	NODE	NODE	NODE	PIX	NODE	NODE	NODE	PIX	 X 				
+
+Legend:
+
+  X    = Self
+  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+  PIX  = Connection traversing at most a single PCIe bridge
+  NV#  = Connection traversing a bonded set of # NVLinks
+
+NIC Legend:
+
+  NIC0: ibp28s0
+  NIC1: ibp63s0
+  NIC2: ibp80s0
+  NIC3: ibp96s0
+  NIC4: ibp159s0
+  NIC5: ibp190s0
+  NIC6: ibp207s0
+  NIC7: ibp222s0
+  NIC8: ibp160s0f0
+  NIC9: ibp160s0f1
+
+Config:
+  GPUs: 2
+  Tensor shape: [1, 32, 16384, 128]
+  Tensor size: 0.1250 GB
+  block_size: 16384
+
+Results:
+  Iterations: 100
+  Total time: 0.0877 seconds
+  Time per shift: 0.88 ms
+  Bandwidth: 142.52 GB/s
+
+Reference speeds:
+  NVLink: ~300-600 GB/s
+  PCIe Gen3 x16: ~32 GB/s
+  PCIe Gen4 x16: ~64 GB/s

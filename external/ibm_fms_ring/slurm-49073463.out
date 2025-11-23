@@ -1,0 +1,16 @@
+Config:
+  GPUs: 2
+  Tensor shape: [1, 32, 16384, 128]
+  Tensor size: 0.1250 GB
+  block_size: 16384
+
+Results:
+  Iterations: 100
+  Total time: 0.8974 seconds
+  Time per shift: 8.97 ms
+  Bandwidth: 13.93 GB/s
+
+Reference speeds:
+  NVLink: ~300-600 GB/s
+  PCIe Gen3 x16: ~32 GB/s
+  PCIe Gen4 x16: ~64 GB/s

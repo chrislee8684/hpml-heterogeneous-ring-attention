@@ -1,0 +1,164 @@
+W1118 23:06:37.201000 2779899 site-packages/torch/distributed/run.py:803] 
+W1118 23:06:37.201000 2779899 site-packages/torch/distributed/run.py:803] *****************************************
+W1118 23:06:37.201000 2779899 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1118 23:06:37.201000 2779899 site-packages/torch/distributed/run.py:803] *****************************************
+Initializing distributed process group (Rank 1/2) with backend 'nccl'...
+Initializing distributed process group (Rank 0/2) with backend 'nccl'...
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+[rank0]:[W1118 23:06:45.295265298 ProcessGroupNCCL.cpp:5072] Guessing device ID based on global rank. This can cause a hang if rank to GPU mapping is heterogeneous. You can specify device_id in init_process_group()
+[INFO] Using prompt: '0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99'
+[INFO] Using prompt length: 298
+[INFO] Rank 1 setting up Ring Attention benchmark...
+using RingAttentionStrategy
+[INFO] Using model: /datasets/ai/llama3/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b
+[INFO] Using tokenizer: /datasets/ai/llama3/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b
+[INFO] Batch size: 1, Input Seq length: 298
+[INFO] Rank 0 setting up Ring Attention benchmark...
+using RingAttentionStrategy
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+[Benchmark] Generating and timing 30 tokens individually for 'Ring Attention' (Rank 0)...
+
+Generated Sequence (Ring Attention): ,- -100-,- -101-,- -102-,- -103-,- -104-,- -105-,- -106-,- -107-,- -108-,- -109
+Token Timings:
+  * Token 1 (,): 2026.25 ms
+  * Token 2 ( ): 1553.89 ms
+  * Token 3 (100): 1289.37 ms
+  * Token 4 (,): 1290.18 ms
+  * Token 5 ( ): 1310.55 ms
+  * Token 6 (101): 1284.88 ms
+  * Token 7 (,): 1314.27 ms
+  * Token 8 ( ): 1326.94 ms
+  * Token 9 (102): 1314.95 ms
+  * Token 10 (,): 1286.85 ms
+  * Token 11 ( ): 1301.93 ms
+  * Token 12 (103): 1322.12 ms
+  * Token 13 (,): 1314.63 ms
+  * Token 14 ( ): 1290.03 ms
+  * Token 15 (104): 1308.31 ms
+  * Token 16 (,): 1326.29 ms
+  * Token 17 ( ): 1317.06 ms
+  * Token 18 (105): 1322.16 ms
+  * Token 19 (,): 1302.32 ms
+  * Token 20 ( ): 1305.50 ms
+  * Token 21 (106): 1301.35 ms
+  * Token 22 (,): 1321.91 ms
+  * Token 23 ( ): 1306.45 ms
+  * Token 24 (107): 1315.32 ms
+  * Token 25 (,): 1303.75 ms
+  * Token 26 ( ): 1306.62 ms
+  * Token 27 (108): 1301.86 ms
+  * Token 28 (,): 1290.85 ms
+  * Token 29 ( ): 1290.39 ms
+  * Token 30 (109): 1297.31 ms
+
+Summary for Ring Attention:
+  Average time per token: 1338.14 ms
+  Median time per token: 1306.53 ms
+  Total generation time for 30 tokens: 40144.31 ms
+[INFO] Rank 0 setting up Regular Attention benchmark...
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+[Benchmark] Generating and timing 30 tokens individually for 'Regular Attention' (Rank 0)...
+
+Generated Sequence (Regular Attention): ,- -100-,- -101-,- -102-,- -103-,- -104-,- -105-,- -106-,- -107-,- -108-,- -109
+Token Timings:
+  * Token 1 (,): 45.82 ms
+  * Token 2 ( ): 41.30 ms
+  * Token 3 (100): 41.88 ms
+  * Token 4 (,): 43.88 ms
+  * Token 5 ( ): 42.89 ms
+  * Token 6 (101): 40.86 ms
+  * Token 7 (,): 40.86 ms
+  * Token 8 ( ): 41.88 ms
+  * Token 9 (102): 43.87 ms
+  * Token 10 (,): 41.84 ms
+  * Token 11 ( ): 43.87 ms
+  * Token 12 (103): 42.63 ms
+  * Token 13 (,): 43.09 ms
+  * Token 14 ( ): 41.87 ms
+  * Token 15 (104): 41.89 ms
+  * Token 16 (,): 41.13 ms
+  * Token 17 ( ): 44.88 ms
+  * Token 18 (105): 41.59 ms
+  * Token 19 (,): 42.99 ms
+  * Token 20 ( ): 44.27 ms
+  * Token 21 (106): 45.35 ms
+  * Token 22 (,): 45.87 ms
+  * Token 23 ( ): 44.88 ms
+  * Token 24 (107): 45.62 ms
+  * Token 25 (,): 40.35 ms
+  * Token 26 ( ): 44.66 ms
+  * Token 27 (108): 40.55 ms
+  * Token 28 (,): 44.20 ms
+  * Token 29 ( ): 44.88 ms
+  * Token 30 (109): 44.86 ms
+
+Summary for Regular Attention:
+  Average time per token: 43.15 ms
+  Median time per token: 43.04 ms
+  Total generation time for 30 tokens: 1294.46 ms
+out1: shape:torch.Size([1, 327, 128256]), tensor:tensor([[[ 5.9062,  6.7500,  5.7500,  ..., -8.5625, -8.5625, -8.5625],
+         [-3.9531, -9.1875, -3.4375,  ..., -7.7812, -7.7812, -7.7812],
+         [-2.7188, -5.4375,  0.9648,  ..., -2.1250, -2.1250, -2.1250],
+         ...,
+         [ 6.5938,  9.2500,  8.5625,  ..., -2.7812, -2.7812, -2.7812],
+         [ 4.8750,  0.7266,  3.2188,  ..., -2.3750, -2.3750, -2.3750],
+         [ 6.4062,  4.7188,  7.0000,  ..., -5.1250, -5.1250, -5.1250]]],
+       device='cuda:0', dtype=torch.bfloat16)
+out2: shape:torch.Size([1, 327, 128256]), tensor:tensor([[[ 5.9062,  6.7500,  5.7500,  ..., -8.5625, -8.5625, -8.5625],
+         [-3.9219, -9.1875, -3.4219,  ..., -7.7812, -7.7812, -7.7812],
+         [-2.5938, -5.2500,  1.0938,  ..., -2.0312, -2.0312, -2.0312],
+         ...,
+         [ 6.6250,  9.3750,  8.6250,  ..., -2.7812, -2.7812, -2.7812],
+         [ 4.8750,  0.6445,  3.2031,  ..., -2.3594, -2.3594, -2.3594],
+         [ 6.5000,  4.7812,  7.0625,  ..., -5.1875, -5.1875, -5.1875]]],
+       device='cuda:0', dtype=torch.bfloat16)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/hpml/hetero_gpu_context_parallelism/scripts/llama_ring/benchmark_ring.py", line 284, in <module>
+[rank0]:     main()
+[rank0]:   File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/hpml/hetero_gpu_context_parallelism/scripts/llama_ring/benchmark_ring.py", line 280, in main
+[rank0]:     torch.testing.assert_close(out1, out2)
+[rank0]:   File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/testing/_comparison.py", line 1589, in assert_close
+[rank0]:     raise error_metas[0].to_error(msg)
+[rank0]: AssertionError: Tensor-likes are not close!
+
+[rank0]: Mismatched elements: 23336734 / 41939712 (55.6%)
+[rank0]: Greatest absolute difference: 1.4921875 at index (0, 292, 2943) (up to 1e-05 allowed)
+[rank0]: Greatest relative difference: 1122304.0 at index (0, 205, 121434) (up to 0.016 allowed)
+E1118 23:07:43.926000 2779899 site-packages/torch/distributed/elastic/multiprocessing/api.py:882] failed (exitcode: 1) local_rank: 0 (pid: 2779908) of binary: /work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/bin/python3.11
+Traceback (most recent call last):
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/bin/torchrun", line 7, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 357, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/run.py", line 936, in main
+    run(args)
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/run.py", line 927, in run
+    elastic_launch(
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 156, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 293, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/llama_ring/benchmark_ring.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-11-18_23:07:43
+  host      : gpu038.unity.rc.umass.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 2779908)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
