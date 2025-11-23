@@ -2,7 +2,8 @@
 set -e
 
 # Configuration
-MODEL_PATH="$HOME/llama3"
+MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
+#MODEL_PATH="$HOME/llama3"
 TOKENIZER_PATH="$HOME/llama3"
 RESULTS_DIR="benchmark_results"
 LOGS_DIR="$RESULTS_DIR/logs"
@@ -35,7 +36,7 @@ run_benchmark() {
         --architecture llama \
         --variant 3-8b \
         --model_path "$MODEL_PATH" \
-        --tokenizer "$TOKENIZER_PATH" \
+        --tokenizer "$MODEL_PATH" \
         --device_type cuda \
         --num_tokens_to_benchmark 30 \
         --batch_size 1 \
