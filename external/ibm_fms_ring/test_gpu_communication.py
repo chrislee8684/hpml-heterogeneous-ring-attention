@@ -19,7 +19,7 @@ torch.cuda.set_device(device)
 # Configuration (matches Ring Attention K/V tensors)
 batch = 1
 num_heads = 32
-block_size = 65536    # Change to test different sizes (2048, 4096, 8192)
+block_size = 16384    # Change to test different sizes (2048, 4096, 8192)
 head_dim = 128
 num_iterations = 100  # Number of ring shifts to test
 
@@ -71,7 +71,10 @@ bandwidth_gb_s = total_data_transferred / total_time
 
 # Print results (only from rank 0)
 if rank == 0:
-    print(f"Config:")
+    print(f"\n{'='*60}")
+    print(f"GPU Communication Benchmark Results")
+    print(f"{'='*60}")
+    print(f"Configuration:")
     print(f"  GPUs: {world_size}")
     print(f"  Tensor shape: {list(tensor.shape)}")
     print(f"  Tensor size: {tensor_size_gb:.4f} GB")
@@ -85,5 +88,6 @@ if rank == 0:
     print(f"  NVLink: ~300-600 GB/s")
     print(f"  PCIe Gen3 x16: ~32 GB/s")
     print(f"  PCIe Gen4 x16: ~64 GB/s")
+    print(f"{'='*60}\n")
 
 dist.destroy_process_group()

@@ -1,0 +1,52 @@
+W1120 00:39:10.806000 2953 site-packages/torch/distributed/run.py:774] 
+W1120 00:39:10.806000 2953 site-packages/torch/distributed/run.py:774] *****************************************
+W1120 00:39:10.806000 2953 site-packages/torch/distributed/run.py:774] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1120 00:39:10.806000 2953 site-packages/torch/distributed/run.py:774] *****************************************
+Initializing distributed process group (Rank 0/2) with backend 'nccl'...
+Initializing distributed process group (Rank 1/2) with backend 'nccl'...
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/workspace/hetero_gpu_context_parallelism/scripts/llama_ring/benchmark_ring.py", line 289, in <module>
+[rank0]:     main()
+[rank0]:   File "/workspace/hetero_gpu_context_parallelism/scripts/llama_ring/benchmark_ring.py", line 184, in main
+[rank0]:     tokenizer = tokenizers.get_tokenizer(args.tokenizer)
+[rank0]:                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/workspace/hetero_gpu_context_parallelism/fms/utils/tokenizers.py", line 174, in get_tokenizer
+[rank0]:     raise RuntimeError(
+[rank0]: RuntimeError: Could not find tokenizer '~/llama3' and HuggingFace transformers is not installed
+/venv/main/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py:4807: UserWarning: No device id is provided via `init_process_group` or `barrier `. Using the current device set by the user. 
+  warnings.warn(  # warn only once
+[rank1]:[W1120 00:39:17.125226139 ProcessGroupNCCL.cpp:5023] [PG ID 0 PG GUID 0 Rank 1]  using GPU 1 as device used by this process is currently unknown. This can potentially cause a hang if this rank to GPU mapping is incorrect. You can specify device_id in init_process_group() to force use of a particular device.
+W1120 00:39:17.938000 2953 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 3019 closing signal SIGTERM
+E1120 00:39:18.154000 2953 site-packages/torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 0 (pid: 3018) of binary: /venv/main/bin/python3
+Traceback (most recent call last):
+  File "/venv/main/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 357, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/torch/distributed/run.py", line 901, in main
+    run(args)
+  File "/venv/main/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in run
+    elastic_launch(
+  File "/venv/main/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 143, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 277, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/llama_ring/benchmark_ring.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-11-20_00:39:17
+  host      : 706257f40711
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 3018)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

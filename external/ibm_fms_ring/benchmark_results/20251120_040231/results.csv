@@ -1,6 +1,0 @@
-Number_Count,Input_Tokens,GPUs,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match
-100,N/A,2,ERROR,ERROR,N/A,FAILED
-500,N/A,2,ERROR,ERROR,N/A,FAILED
-1000,N/A,2,ERROR,ERROR,N/A,FAILED
-1500,N/A,2,ERROR,ERROR,N/A,FAILED
-2000,N/A,2,ERROR,ERROR,N/A,FAILED

@@ -1,0 +1,27 @@
+W1118 23:09:27.619000 2781670 site-packages/torch/distributed/run.py:803] 
+W1118 23:09:27.619000 2781670 site-packages/torch/distributed/run.py:803] *****************************************
+W1118 23:09:27.619000 2781670 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1118 23:09:27.619000 2781670 site-packages/torch/distributed/run.py:803] *****************************************
+Traceback (most recent call last):
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/bin/torchrun", line 7, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 357, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/run.py", line 936, in main
+    run(args)
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/run.py", line 926, in run
+    config, cmd, cmd_args = config_from_args(args)
+                            ^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/run.py", line 847, in config_from_args
+    config = LaunchConfig(
+             ^^^^^^^^^^^^^
+  File "<string>", line 21, in __init__
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 112, in __post_init__
+    and torch.cuda.is_available()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/cuda/__init__.py", line 182, in is_available
+    return torch._C._cuda_getDeviceCount() > 0
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
