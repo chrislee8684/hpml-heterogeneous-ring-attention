@@ -11,18 +11,22 @@ CSV_FILE="$RESULTS_DIR/benchmark_results.csv"
 
 # Setup
 mkdir -p "$LOGS_DIR"
-echo "Number_Count,Input_Tokens,GPUs,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match" > "$CSV_FILE"
+echo "Number_Count,Input_Tokens,GPUs,Prefill_Ring_ms,Prefill_Regular_ms,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match" > "$CSV_FILE"
 
 # Parse functions
-parse_time() { 
+parse_time() {
     grep -A 3 "Summary for $2:" "$1" | grep "Average time per token:" | awk '{print $5}'
 }
 
-parse_input_tokens() { 
+parse_prefill() {
+    grep "Prefill latency:" "$1" | grep "$2" | awk '{print $4}'
+}
+
+parse_input_tokens() {
     grep "Input Seq length:" "$1" | awk '{print $NF}'
 }
 
-check_correctness() { 
+check_correctness() {
     grep -q "AssertionError\|FAILED" "$1" && echo "FAILED" || echo "PASSED"
 }
 
@@ -32,7 +36,7 @@ run_benchmark() {
     echo "Running: Number Count=$1, GPUs=$2"
 
     set +e
-    torchrun --nproc_per_node=$2 scripts/llama_ring/benchmark_ring.py \
+    torchrun --nproc_per_node=$2 scripts/llama_ring_sg/benchmark_ring.py \
         --architecture llama \
         --variant 3-8b \
         --model_path "$MODEL_PATH" \
@@ -47,13 +51,17 @@ run_benchmark() {
 
     local ring=$(parse_time "$log" "Ring Attention")
     local reg=$(parse_time "$log" "Regular Attention")
+    local prefill_ring=$(parse_prefill "$log" "Ring Attention")
+    local prefill_reg=$(parse_prefill "$log" "Regular Attention")
     local input_tokens=$(parse_input_tokens "$log")
     local speedup="N/A"
-    
+
     [[ -n "$ring" && -n "$reg" ]] && speedup=$(echo "scale=2; $reg / $ring" | bc)
 
-    echo "$1,${input_tokens:-N/A},$2,${ring:-ERROR},${reg:-ERROR},$speedup,$(check_correctness "$log")" >> "$CSV_FILE"
-    echo "  Input Tokens: ${input_tokens:-N/A} | Ring: ${ring:-ERROR} ms/token | Regular: ${reg:-ERROR} ms/token | Speedup: ${speedup}x"
+    echo "$1,${input_tokens:-N/A},$2,${prefill_ring:-ERROR},${prefill_reg:-ERROR},${ring:-ERROR},${reg:-ERROR},$speedup,$(check_correctness "$log")" >> "$CSV_FILE"
+    echo "  Input Tokens: ${input_tokens:-N/A}"
+    echo "  Prefill - Ring: ${prefill_ring:-ERROR} ms | Regular: ${prefill_reg:-ERROR} ms"
+    echo "  Decode - Ring: ${ring:-ERROR} ms/token | Regular: ${reg:-ERROR} ms/token | Speedup: ${speedup}x"
 }
 
 # Run benchmarks (500 1000 1500 2000)
@@ -64,10 +72,22 @@ done
 
 # Generate markdown table
 {
-    echo -e "# Ring Attention Benchmark Results\n\n| Number Count | Input Tokens | GPUs | Ring (ms) | Regular (ms) | Speedup | Match |"
-    echo "|--------------|--------------|------|-----------|--------------|---------|-------|"
-    
-    tail -n +2 "$CSV_FILE" | while IFS=',' read num_count tokens gpu ring reg spd corr; do
+    echo -e "# Ring Attention Benchmark Results\n"
+    echo -e "## Prefill Latency Comparison\n"
+    echo "| Number Count | Input Tokens | GPUs | Prefill Ring (ms) | Prefill Regular (ms) | Match |"
+    echo "|--------------|--------------|------|-------------------|----------------------|-------|"
+
+    tail -n +2 "$CSV_FILE" | while IFS=',' read num_count tokens gpu pfill_ring pfill_reg ring reg spd corr; do
+        [[ "$pfill_ring" != "ERROR" ]] && pfill_ring="$pfill_ring ms"
+        [[ "$pfill_reg" != "ERROR" ]] && pfill_reg="$pfill_reg ms"
+        echo "| $num_count | $tokens | $gpu | $pfill_ring | $pfill_reg | $corr |"
+    done
+
+    echo -e "\n## Decode Performance (Average Time per Token)\n"
+    echo "| Number Count | Input Tokens | GPUs | Ring (ms/token) | Regular (ms/token) | Speedup | Match |"
+    echo "|--------------|--------------|------|-----------------|--------------------|---------| -------|"
+
+    tail -n +2 "$CSV_FILE" | while IFS=',' read num_count tokens gpu pfill_ring pfill_reg ring reg spd corr; do
         [[ "$ring" != "ERROR" ]] && ring="$ring ms"
         [[ "$reg" != "ERROR" ]] && reg="$reg ms"
         [[ "$spd" != "N/A" ]] && spd="${spd}x"

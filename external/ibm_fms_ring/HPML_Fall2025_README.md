@@ -57,7 +57,7 @@ Both benchmarks use:
 
 ### Prerequisites
 
-1. **GPU Cluster Access**: Ensure you have access to a GPU cluster (e.g., Columbia Insomnia cluster with NVIDIA L40S GPUs)
+1. **GPU Cluster Access**
 
 2. **Install Dependencies**: From the root of the repository, install all required packages:
    ```bash

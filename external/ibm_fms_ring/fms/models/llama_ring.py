@@ -20,23 +20,29 @@ def ring_forward(
     is_causal_mask=False,
     attn_algorithm=None
 ):
-    
-    residual = x 
+
+    residual = x
     x_norm = self.ln(x)
 
-
-    x = RingAttentionKernel.ring_attention(
+    attn_output = RingAttentionKernel.ring_attention(
         x_norm=x_norm,
         attn_module=self.attn,
         strategy=self.distributed_strategy,
         valid_len=self.distributed_strategy._local_valid_len,
-        mask=mask, 
+        mask=mask,
         position_ids=position_ids, # Sharded position_ids
-        past_key_value_state=past_key_value_state, 
+        past_key_value_state=past_key_value_state,
+        use_cache=use_cache,
         causal=is_causal_mask,
     )
-    
-    # use cache and dropout have not yet been implemented / tested
+
+    # Unpack attention output
+    if use_cache:
+        x, cache = attn_output
+    else:
+        x = attn_output
+        cache = None
+
     x = x + residual
 
     # then we do FF and Add&Norm
@@ -46,7 +52,7 @@ def ring_forward(
     x = x + residual
 
     if use_cache:
-        return (x, None)
+        return (x, cache)
     else:
         return x
 
@@ -62,39 +68,65 @@ class RingAttentionKernel:
         mask: Optional[Tensor] = None,
         position_ids: Optional[Tensor] = None,
         past_key_value_state: Optional[Tuple[Tensor, Tensor]] = None,
+        use_cache: bool = False,
         causal: bool = False,
-    ) -> Tensor:
-        
-        batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape 
+    ):
+
+        batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
         assert num_valid_tokens_input_shard == valid_len
         current_rank_token_global_start_idx = strategy.rank * strategy.block_size
 
         # slice to valid length to be safe
         current_rank_input_slice = x_norm[:, :valid_len]
 
-        # compute position ids
+        # Determine if we're using cached KV states (decode phase)
+        has_cache = use_cache and past_key_value_state is not None and past_key_value_state[0].numel() > 0
+
+        # Adjust position IDs based on whether we have cached context
+        if has_cache:
+            # During decode, position_ids should account for the cached sequence length
+            # past_key_value_state[0] has shape [batch, nheads, cached_seq_len, head_dim]
+            cached_seq_len = past_key_value_state[0].shape[2]
+            position_offset = cached_seq_len
+        else:
+            position_offset = 0
+
+        # compute position ids for the current tokens
         if position_ids is not None:
             position_ids_for_rope_computation = position_ids[:, current_rank_token_global_start_idx : current_rank_token_global_start_idx + valid_len]
         elif valid_len > 0:
-            position_ids_for_rope_computation = torch.arange(current_rank_token_global_start_idx, current_rank_token_global_start_idx + valid_len, device=x_norm.device).unsqueeze(0).expand(batch_size, -1)
+            # Add position_offset to account for cached context
+            position_ids_for_rope_computation = torch.arange(
+                current_rank_token_global_start_idx + position_offset,
+                current_rank_token_global_start_idx + valid_len + position_offset,
+                device=x_norm.device
+            ).unsqueeze(0).expand(batch_size, -1)
         else:
             position_ids_for_rope_computation = None
 
-        # compute QKV + RoPE
+        # compute QKV + RoPE for new tokens
         if valid_len:
-            q, k, v = RingAttentionKernel._compute_qkv_and_rope(
+            q, k_new, v_new = RingAttentionKernel._compute_qkv_and_rope(
                 attn_module, current_rank_input_slice, position_ids_for_rope_computation
             )
         else:
             nheads, emb_kq_per_head, emb_v_per_head = attn_module.nheads, attn_module.emb_kq_per_head, attn_module.emb_v_per_head
-            q = k = torch.empty((batch_size, nheads, 0, emb_kq_per_head), device=x_norm.device, dtype=x_norm.dtype)
-            v = torch.empty((batch_size, nheads, 0, emb_v_per_head), device=x_norm.device, dtype=x_norm.dtype)
+            q = k_new = torch.empty((batch_size, nheads, 0, emb_kq_per_head), device=x_norm.device, dtype=x_norm.dtype)
+            v_new = torch.empty((batch_size, nheads, 0, emb_v_per_head), device=x_norm.device, dtype=x_norm.dtype)
+
+        # Concatenate with cached KV if available
+        if has_cache:
+            k = torch.cat([past_key_value_state[0], k_new], dim=2)
+            v = torch.cat([past_key_value_state[1], v_new], dim=2)
+        else:
+            k = k_new
+            v = v_new
 
         scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
-        
+
         accum_dtype = torch.float32
 
-        # main ring attention 
+        # main ring attention
         out = RingAttentionKernel._compute_attention_ring(
             q, k, v, mask, strategy, current_rank_token_global_start_idx, valid_len, scale, accum_dtype, causal # valid_len is num_valid_tokens for this rank
         )
@@ -105,7 +137,11 @@ class RingAttentionKernel:
         else:
             out = torch.empty((batch_size, 0, emb_dim), device=x_norm.device, dtype=x_norm.dtype)
 
-        return out
+        # Return cache if requested
+        if use_cache:
+            return out, (k, v)
+        else:
+            return out
 
 
     @staticmethod

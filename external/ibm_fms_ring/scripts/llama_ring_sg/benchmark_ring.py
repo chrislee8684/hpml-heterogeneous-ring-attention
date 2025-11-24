@@ -148,16 +148,42 @@ def run_generation_benchmark(model, tokenizer, initial_ids, num_tokens_to_gen, c
 
     # Memory profiling for generation
     if device.type == "cuda" and rank == 0:
-        torch.cuda.reset_peak_memory_stats() # Reset peak for this specific generation run
+        torch.cuda.reset_peak_memory_stats()
 
     mem_before_gen = get_memory_snapshot(device.type, rank)
-    for i in range(num_tokens_to_gen):
-        input_ids = current_ids if past_key_value_states is None else current_ids[:, -1:]
+
+    # Prefill: process entire input prompt and generate KV cache
+    input_seq_len = current_ids.shape[1]
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    prefill_start = time_module.perf_counter()
+
+    logits, past_key_value_states = model(current_ids, past_key_value_states=None, use_cache=True)
+    first_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(-1)
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    prefill_latency_ms = (time_module.perf_counter() - prefill_start) * 1000
+
+    if rank == 0:
+        print0(f"  Prefill latency: {prefill_latency_ms:.2f} ms ({input_seq_len} tokens)")
+        log_to_csv("Prefill_Latency", "Prefill_Time_ms", prefill_latency_ms, current_strategy_label, current_prompt_n)
+        log_to_csv("Prefill_Latency", "Input_Seq_Length", input_seq_len, current_strategy_label, current_prompt_n)
+
+    token_str = tokenizer.convert_ids_to_tokens([first_token.item()])
+    token_text = tokenizer.convert_tokens_to_string(token_str)
+    generated_text.append(token_text)
+    current_ids = torch.cat([current_ids, first_token], dim=1)
+    token_times.append(prefill_latency_ms)
+
+    # Decode: generate remaining tokens using KV cache
+    for i in range(1, num_tokens_to_gen):
+        input_ids = current_ids[:, -1:]
         if device.type == "cuda":
             torch.cuda.synchronize()
         start = time_module.perf_counter()
 
-        logits = model(input_ids, past_key_value_states=past_key_value_states, use_cache=False)
+        logits, past_key_value_states = model(input_ids, past_key_value_states=past_key_value_states, use_cache=True)
         next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(-1)
 
         if device.type == "cuda":
