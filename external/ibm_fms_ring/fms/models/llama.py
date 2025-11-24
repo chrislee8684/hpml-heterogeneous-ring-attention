@@ -479,6 +479,19 @@ _8b_llama3_config = LLaMAConfig(
     rope_theta=500_000.0,
 )
 
+_1b_llama3_config = LLaMAConfig(
+    src_vocab_size=128256,
+    emb_dim=2048,
+    norm_eps=1e-5,
+    nheads=32,
+    kvheads=8,
+    nlayers=16,
+    hidden_grow_factor=3.5,
+    multiple_of=1024,
+    max_expected_seq_len=8192,
+    rope_theta=500_000.0,
+)
+
 # Granite configs
 _granite_7b_config = LLaMAConfig(
     src_vocab_size=32008,
@@ -538,6 +551,9 @@ models.register_model(_architecture_name, "2-70b", _llama_factory_factory(_70b_c
 # LLama 3 family
 models.register_model(
     _architecture_name, "3-8b", _llama_factory_factory((_8b_llama3_config))
+)
+models.register_model(
+    _architecture_name, "3.2-1b", _llama_factory_factory((_1b_llama3_config))
 )
 
 # Granite family
