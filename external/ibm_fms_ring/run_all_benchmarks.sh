@@ -1,99 +1,48 @@
 #!/bin/bash
 set -e
 
-# Configuration
 MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Meta-Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
-#MODEL_PATH="$HOME/llama3"
-TOKENIZER_PATH="$HOME/llama3"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="benchmark_results"
-LOGS_DIR="$RESULTS_DIR/logs"
-CSV_FILE="$RESULTS_DIR/benchmark_results.csv"
+NUM_GPUS=2
 
-# Setup
-mkdir -p "$LOGS_DIR"
-echo "Number_Count,Input_Tokens,GPUs,Prefill_Ring_ms,Prefill_Regular_ms,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match" > "$CSV_FILE"
+LOG_FILE="$RESULTS_DIR/run_${TIMESTAMP}.log"
+CSV_FILE="$RESULTS_DIR/results_${TIMESTAMP}.csv"
+MD_FILE="$RESULTS_DIR/results_${TIMESTAMP}.md"
 
-# Parse functions
-parse_time() {
-    grep -A 3 "Summary for $2:" "$1" | grep "Average time per token:" | awk '{print $5}'
-}
+mkdir -p "$RESULTS_DIR"
 
-parse_prefill() {
-    grep "Prefill latency:" "$1" | grep "$2" | awk '{print $4}'
-}
-
-parse_input_tokens() {
-    grep "Input Seq length:" "$1" | awk '{print $NF}'
-}
-
-check_correctness() {
-    grep -q "AssertionError\|FAILED" "$1" && echo "FAILED" || echo "PASSED"
-}
+echo "Starting benchmark at $(date)" | tee "$LOG_FILE"
+echo "Logging to: $LOG_FILE"
+echo ""
 
 # Run benchmark
-run_benchmark() {
-    local log="$LOGS_DIR/benchmark_numcount${1}_gpu${2}.log"
-    echo "Running: Number Count=$1, GPUs=$2"
-
-    set +e
-    torchrun --nproc_per_node=$2 scripts/llama_ring_sg/benchmark_ring.py \
-        --architecture llama \
-        --variant 3-8b \
-        --model_path "$MODEL_PATH" \
-        --tokenizer "$MODEL_PATH" \
-        --device_type cuda \
-        --num_tokens_to_benchmark 30 \
-        --batch_size 1 \
-        --run_ring_first \
-        --prompt_len $1 \
-        > "$log" 2>&1
-    set -e
-
-    local ring=$(parse_time "$log" "Ring Attention")
-    local reg=$(parse_time "$log" "Regular Attention")
-    local prefill_ring=$(parse_prefill "$log" "Ring Attention")
-    local prefill_reg=$(parse_prefill "$log" "Regular Attention")
-    local input_tokens=$(parse_input_tokens "$log")
-    local speedup="N/A"
-
-    [[ -n "$ring" && -n "$reg" ]] && speedup=$(echo "scale=2; $reg / $ring" | bc)
-
-    echo "$1,${input_tokens:-N/A},$2,${prefill_ring:-ERROR},${prefill_reg:-ERROR},${ring:-ERROR},${reg:-ERROR},$speedup,$(check_correctness "$log")" >> "$CSV_FILE"
-    echo "  Input Tokens: ${input_tokens:-N/A}"
-    echo "  Prefill - Ring: ${prefill_ring:-ERROR} ms | Regular: ${prefill_reg:-ERROR} ms"
-    echo "  Decode - Ring: ${ring:-ERROR} ms/token | Regular: ${reg:-ERROR} ms/token | Speedup: ${speedup}x"
-}
-
-# Run benchmarks (500 1000 1500 2000)
-for num_count in 100 500 1000 1500 2000; do 
-    run_benchmark $num_count 2
-done
-
+torchrun --nproc_per_node=$NUM_GPUS scripts/llama_ring_sg/benchmark_ring.py \
+    --architecture llama \
+    --variant 3-8b \
+    --model_path "$MODEL_PATH" \
+    --tokenizer "$MODEL_PATH" \
+    --device_type cuda \
+    --num_tokens_to_benchmark 30 \
+    --batch_size 1 \
+    --run_ring_first \
+    --csv_output_file "$CSV_FILE" \
+    2>&1 | tee -a "$LOG_FILE"
 
 # Generate markdown table
 {
-    echo -e "# Ring Attention Benchmark Results\n"
-    echo -e "## Prefill Latency Comparison\n"
-    echo "| Number Count | Input Tokens | GPUs | Prefill Ring (ms) | Prefill Regular (ms) | Match |"
-    echo "|--------------|--------------|------|-------------------|----------------------|-------|"
-
-    tail -n +2 "$CSV_FILE" | while IFS=',' read num_count tokens gpu pfill_ring pfill_reg ring reg spd corr; do
-        [[ "$pfill_ring" != "ERROR" ]] && pfill_ring="$pfill_ring ms"
-        [[ "$pfill_reg" != "ERROR" ]] && pfill_reg="$pfill_reg ms"
-        echo "| $num_count | $tokens | $gpu | $pfill_ring | $pfill_reg | $corr |"
+    echo "# Benchmark Results - $(date +"%Y-%m-%d %H:%M")"
+    echo ""
+    echo "| Strategy | Prompt N | TTFT (ms) | Avg Decode (ms) | Total (ms) |"
+    echo "|----------|----------|-----------|-----------------|------------|"
+    tail -n +2 "$CSV_FILE" | while IFS=',' read strategy n ttft avg total; do
+        printf "| %s | %s | %s | %s | %s |\n" "$strategy" "$n" "$ttft" "$avg" "$total"
     done
+} > "$MD_FILE"
 
-    echo -e "\n## Decode Performance (Average Time per Token)\n"
-    echo "| Number Count | Input Tokens | GPUs | Ring (ms/token) | Regular (ms/token) | Speedup | Match |"
-    echo "|--------------|--------------|------|-----------------|--------------------|---------| -------|"
-
-    tail -n +2 "$CSV_FILE" | while IFS=',' read num_count tokens gpu pfill_ring pfill_reg ring reg spd corr; do
-        [[ "$ring" != "ERROR" ]] && ring="$ring ms"
-        [[ "$reg" != "ERROR" ]] && reg="$reg ms"
-        [[ "$spd" != "N/A" ]] && spd="${spd}x"
-        echo "| $num_count | $tokens | $gpu | $ring | $reg | $spd | $corr |"
-    done
-} > "$RESULTS_DIR/benchmark_table.md"
-
-cat "$RESULTS_DIR/benchmark_table.md"
-echo -e "\nCSV: $CSV_FILE | Logs: $LOGS_DIR/"
+echo ""
+echo "Done. Files:"
+echo "  $LOG_FILE"
+echo "  $CSV_FILE"
+echo "  $MD_FILE"
+cat "$MD_FILE"
