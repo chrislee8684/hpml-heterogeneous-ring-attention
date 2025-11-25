@@ -14,7 +14,6 @@ from fms import models
 from fms.utils import tokenizers
 from fms.distributed.strategy import NoOpStrategy
 
-# Summary CSV headers
 SUMMARY_HEADERS = ["strategy", "prompt_tokens", "ttft_ms", "avg_decode_ms", "total_time_ms", "comm_time_ms", "compute_comm_ratio"]
 
 
@@ -31,7 +30,7 @@ def parse_args():
 
     parser.add_argument("--device_type", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--architecture", type=str, default="llama")
-    parser.add_argument("--variant", type=str, default="7b")
+    parser.add_argument("--variant", type=str, default="8b")
     parser.add_argument("--model_path", type=str, default=str(model_dir))
     parser.add_argument("--tokenizer", type=str, default=str(model_dir / "tokenizer.model"))
     parser.add_argument("--batch_size", type=int, default=1)
@@ -46,15 +45,25 @@ def parse_args():
 
 
 def setup_model(args, strategy, dtype):
-    model = models.get_model(
-        args.architecture,
-        args.variant,
-        model_path=args.model_path,
-        device_type=args.device_type,
-        source="hf",
-        distributed_strategy=strategy,
-        data_type=dtype
-    )
+    # For hf_pretrained, don't pass variant or source - let it infer from model_path
+    if args.architecture == "hf_pretrained":
+        model = models.get_model(
+            args.architecture,
+            model_path=args.model_path,
+            device_type=args.device_type,
+            distributed_strategy=strategy,
+            data_type=dtype
+        )
+    else:
+        model = models.get_model(
+            args.architecture,
+            args.variant,
+            model_path=args.model_path,
+            device_type=args.device_type,
+            source="hf",
+            distributed_strategy=strategy,
+            data_type=dtype
+        )
     model.eval()
     torch.set_grad_enabled(False)
     return model
@@ -144,20 +153,16 @@ def main():
     dtype = getattr(torch, args.dtype)
     torch.set_default_dtype(dtype)
 
-    # Load tokenizer
-    tokenizer = tokenizers.get_tokenizer(args.tokenizer)
-    if world_size > 1:
-        dist.barrier()
-
-    # Create input tokens
-    vocab_size = tokenizer.vocab_size() if hasattr(tokenizer, 'vocab_size') else 32000
+    # Create random input tokens (use hardcoded vocab range to avoid tokenizer loading issues)
+    # LLaMA vocab is typically 32000-128256, use safe range
+    vocab_size = 128256
     ids = torch.randint(100, vocab_size - 100, (args.batch_size, args.num_tokens), dtype=torch.long, device=device)
 
+    # Synchronize random tokens across ranks
     if world_size > 1:
         dist.broadcast(ids, src=0)
-        dist.barrier()
 
-    print0(f"\nBenchmark: {args.num_tokens} prompt tokens, {args.num_decode_tokens} decode tokens")
+    print0(f"Benchmark: {args.num_tokens} prompt tokens, {args.num_decode_tokens} decode tokens")
 
     # Define strategies
     strategies = [("Ring", "ring"), ("Regular", NoOpStrategy)]
