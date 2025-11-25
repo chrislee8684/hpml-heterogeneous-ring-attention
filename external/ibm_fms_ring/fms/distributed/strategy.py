@@ -185,6 +185,16 @@ class RingAttentionStrategy(DistributedStrategy):
             )
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
+        # HPML: Communication timing instrumentation
+        self._comm_time_ms: float = 0.0
+
+    def reset_comm_time(self):
+        """HPML: Reset communication time counter."""
+        self._comm_time_ms = 0.0
+
+    def get_comm_time_ms(self) -> float:
+        """HPML: Get accumulated communication time in milliseconds."""
+        return self._comm_time_ms
 
     def _pad_to_block_size(
         self, tensor: torch.Tensor, dim: int = 1
@@ -263,9 +273,17 @@ class RingAttentionStrategy(DistributedStrategy):
             P2POp(dist.isend, padded, peer=send_to),
             P2POp(dist.irecv, recv_buf, peer=recv_from)
         ]
+        # HPML: Time communication
+        import time as _time
+        if tensor.device.type == "cuda":
+            torch.cuda.synchronize()
+        _t0 = _time.perf_counter()
         reqs = dist.batch_isend_irecv(ops)
         for req in reqs:
             req.wait()
+        if tensor.device.type == "cuda":
+            torch.cuda.synchronize()
+        self._comm_time_ms += (_time.perf_counter() - _t0) * 1000
 
         new_len = recv_len.item()
         assert 0 <= new_len <= self.block_size

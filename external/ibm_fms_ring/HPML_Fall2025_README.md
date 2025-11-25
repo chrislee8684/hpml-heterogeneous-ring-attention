@@ -1,102 +1,41 @@
-# HPML Fall 2025 
+# HPML Fall 2025
 
-## New Contributions
+## Code Modifications
 
-### 1. GPU Interconnect Speed Measurement (`test_gpu_communication.py`)
+### 1. `fms/distributed/strategy.py`
+Added communication timing to `RingAttentionStrategy` class:
+- `_comm_time_ms` variable to accumulate P2P communication time
+- `reset_comm_time()` and `get_comm_time_ms()` methods
+- Timing instrumentation around `batch_isend_irecv()` calls
 
-Measures GPU-to-GPU communication bandwidth using ring shift operations to characterize interconnect performance.
+### 2. `scripts/llama_ring_sg/benchmark_ring.py`
+Benchmark script comparing Ring vs Regular Attention:
+- Measures TTFT (prefill), decode time, and compute/comm ratio
+- Outputs results to CSV for comparison tables
 
-**Usage:**
+### 3. `run_all_benchmarks.sh`
+Shell script to run benchmarks across token counts (100, 500, 1000, 1500, 2000).
+
+## Metrics
+
+| Metric | Description |
+|--------|-------------|
+| TTFT | Time To First Token (prefill) |
+| Avg Decode | Average time per decoded token |
+| Comm Time | P2P communication time (Ring only) |
+| Compute/Comm Ratio | Compute time / Communication time |
+
+## Usage
+
 ```bash
-torchrun --nproc_per_node=2 test_gpu_communication.py
-```
-
-**Output:**
-- Per-GPU timing statistics
-- Measured bandwidth vs theoretical limits
-- Interconnect type identification
-
----
-
-### 2. Comprehensive Benchmark Suite (`run_all_benchmarks.sh`)
-
-Automated benchmarking script that compares Ring Attention vs Regular Attention across varying context lengths.
-
-**Usage:**
-```bash
+# Full suite
 bash run_all_benchmarks.sh
+
+# Single run
+torchrun --nproc_per_node=2 scripts/llama_ring_sg/benchmark_ring.py \
+    --num_tokens 1000 --summary_csv results.csv
 ```
 
-**Output Files:**
-- `benchmark_results/benchmark_results.csv` - Raw data
-- `benchmark_results/benchmark_table.md` - Formatted results table
-- `benchmark_results/logs/` - Individual run logs
+## Output
 
-**Metrics Captured:**
-- Number Count (input prompt parameter)
-- Input Tokens (actual tokenized length)
-- GPUs used
-- Average time/token for Ring Attention (ms)
-- Average time/token for Regular Attention (ms)
-- Speedup (Regular/Ring ratio)
-- Output correctness validation
-
----
-
-## Model Configuration
-
-Both benchmarks use:
-- **Model:** Meta-Llama-3.1-8B
-- **Architecture:** LLaMA with 32 attention heads
-- **Precision:** FP16
-- **Backend:** NCCL (CUDA)
-
----
-
-## Setup Instructions
-
-### Prerequisites
-
-1. **GPU Cluster Access**
-
-2. **Install Dependencies**: From the root of the repository, install all required packages:
-   ```bash
-   pip install -e .
-   ```
-
-3. **Download Model and Tokenizer**:
-   - Download the Meta-Llama-3.1-8B model from Hugging Face
-   - Update the `MODEL_PATH` in `run_all_benchmarks.sh` to point to your model location:
-     ```bash
-     MODEL_PATH="/path/to/your/llama3/model"
-     ```
-   - The script expects the model path to include both model weights and tokenizer files
-
-### Running the Benchmark Script
-
-From the root of the repository:
-
-```bash
-bash run_all_benchmarks.sh
-```
-
-**What the script does:**
-1. Creates `benchmark_results/` directory with logs subdirectory
-2. Runs benchmarks across multiple context lengths (100, 500, 1000, 1500, 2000 tokens)
-3. Tests both Ring Attention and Regular Attention implementations
-4. Validates output correctness between implementations
-5. Generates performance comparison results
-
-**Note:** The script is currently configured to use 2 GPUs per benchmark (`--nproc_per_node=2`). You can modify this in the script by changing the GPU parameter in the `run_benchmark` function.
-
----
-
-## Things to be Improved
-
-### Current Benchmark Limitations
-
-1. **KV Cache Not Enabled**
-
-2. **Measuring Prefill + Decode Together (Not Just Decode)**
-
-
+Results saved to `benchmark_results/summary_<timestamp>.csv`

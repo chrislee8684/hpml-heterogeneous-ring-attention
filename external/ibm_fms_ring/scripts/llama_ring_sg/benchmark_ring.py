@@ -1,427 +1,225 @@
-`import argparse
+"""Benchmark script for comparing Ring Attention vs Regular Attention."""
+
+import argparse
 import os
 import statistics
-import random
-import warnings
-import time as time_module # Renamed to avoid conflict with 'time' variable in run_generation_benchmark
+import time
 import csv
-import gc # Make sure gc is imported
+import gc
 import torch
-import numpy as np
 import torch.distributed as dist
-import psutil # For CPU memory
 from pathlib import Path
 
 from fms import models
 from fms.utils import tokenizers
 from fms.distributed.strategy import NoOpStrategy
 
-# Globals for CSV logging
-csv_writer = None
-csv_file_handle = None
-# Headers for CSV
-CSV_HEADERS = ["timestamp", "rank", "strategy_label", "prompt_n", "event_type", "key", "value_type", "value"]
+# Summary CSV headers
+SUMMARY_HEADERS = ["strategy", "prompt_tokens", "ttft_ms", "avg_decode_ms", "total_time_ms", "comm_time_ms", "compute_comm_ratio"]
 
 
 def print0(*args, **kwargs):
     if int(os.getenv("RANK", 0)) == 0:
         print(*args, **kwargs)
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Benchmark token generation with LLaMA attention strategies")
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Benchmark Ring vs Regular Attention")
     script_path = Path(__file__).resolve()
     repo_dir = script_path.parents[2]
     model_dir = repo_dir.parent / "llama-hf"
-    tokenizer_path = model_dir / "tokenizer.model"
 
-    parser.add_argument("--device_type", type=str, default="cuda", choices=["cuda", "cpu", "mps"])
+    parser.add_argument("--device_type", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--architecture", type=str, default="llama")
     parser.add_argument("--variant", type=str, default="7b")
     parser.add_argument("--model_path", type=str, default=str(model_dir))
-    parser.add_argument("--tokenizer", type=str, default=str(tokenizer_path))
+    parser.add_argument("--tokenizer", type=str, default=str(model_dir / "tokenizer.model"))
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--num_tokens_to_benchmark", type=int, default=5)
-    parser.add_argument("--run_ring_first", action="store_true")
+    parser.add_argument("--num_tokens", type=int, required=True, help="Number of prompt tokens")
+    parser.add_argument("--num_decode_tokens", type=int, default=30, help="Number of tokens to decode")
+    parser.add_argument("--run_ring_first", action="store_true", default=True)
     parser.add_argument("--no-run_ring_first", dest="run_ring_first", action="store_false")
-    parser.add_argument("--csv_output_file", type=str, default="benchmark_log.csv", help="Path to the CSV file for logging benchmark results.")
-    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
-    parser.set_defaults(run_ring_first=True)
+    parser.add_argument("--summary_csv", type=str, default=None, help="Summary CSV path (appends)")
+    parser.add_argument("--dtype", type=str, default="float16", choices=["float32", "float16", "bfloat16"])
+
     return parser.parse_args()
 
-def init_csv_logging(csv_filepath, rank):
-    global csv_writer, csv_file_handle
-    if rank == 0 and csv_filepath:
-        try:
-            csv_file_handle = open(csv_filepath, "w", newline="", encoding="utf-8")
-            csv_writer = csv.writer(csv_file_handle)
-            csv_writer.writerow(CSV_HEADERS)
-            print0(f"[INFO] CSV logging initialized to: {csv_filepath}")
-        except IOError as e:
-            print0(f"[WARNING] Could not open CSV file {csv_filepath} for writing: {e}")
-            csv_writer = None
-            csv_file_handle = None
 
-def close_csv_logging():
-    global csv_file_handle, csv_writer
-    if csv_file_handle:
-        csv_file_handle.close()
-        print0("[INFO] CSV logging file closed.")
-        csv_file_handle = None
-        csv_writer = None
-
-def log_to_csv(event_type, key, value, strategy_label="N/A", prompt_n="N/A"):
-    if csv_writer:
-        timestamp = time_module.strftime("%Y-%m-%d %H:%M:%S")
-        current_rank = 0 # CSV logging is done by rank 0
-        val_type = type(value).__name__
-        csv_writer.writerow([timestamp, current_rank, strategy_label, prompt_n, event_type, key, val_type, str(value)])
-
-def set_determinism():
-    SEED = 42
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-
-def setup_model(args, strategy=None, dtype=None):
-    dist_strategy_param = strategy
-    if strategy is NoOpStrategy:
-        dist_strategy_param = NoOpStrategy
-    return models.get_model(
+def setup_model(args, strategy, dtype):
+    model = models.get_model(
         args.architecture,
         args.variant,
         model_path=args.model_path,
         device_type=args.device_type,
         source="hf",
-        distributed_strategy=dist_strategy_param,
+        distributed_strategy=strategy,
         data_type=dtype
     )
+    model.eval()
+    torch.set_grad_enabled(False)
+    return model
 
-def get_memory_snapshot(device_type, rank=0):
-    """Gets a snapshot of current and peak memory usage."""
-    if rank != 0: # Memory reporting primarily for rank 0
-        return {}
 
-    process = psutil.Process(os.getpid())
-    rss_mb = process.memory_info().rss / (1024 * 1024)
-    snapshot = {"cpu_rss_mb": rss_mb}
+def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
+    """Run generation benchmark. Returns dict with timing metrics."""
+    from fms.distributed.strategy import RingAttentionStrategy
 
-    if device_type == "cuda":
-        snapshot["cuda_allocated_mb"] = torch.cuda.memory_allocated() / (1024 * 1024)
-        snapshot["cuda_reserved_mb"] = torch.cuda.memory_reserved() / (1024 * 1024)
-        snapshot["cuda_max_allocated_mb"] = torch.cuda.max_memory_allocated() / (1024 * 1024)
-        snapshot["cuda_max_reserved_mb"] = torch.cuda.max_memory_reserved() / (1024 * 1024)
-    elif device_type == "mps":
-        snapshot["mps_allocated_mb"] = torch.mps.current_allocated_memory() / (1024 * 1024)
-        # MPS doesn't have a direct equivalent for max_memory_allocated easily accessible here
-    return snapshot
-
-def print_memory_snapshot(label_prefix, snapshot, rank=0, strategy_label="N/A", prompt_n="N/A"):
-    if rank == 0 and snapshot: # Ensure snapshot is not empty (e.g., from non-rank 0)
-        cpu_rss = snapshot.get('cpu_rss_mb', 0)
-        print0(f"[Memory ({label_prefix})] CPU RSS: {cpu_rss:.2f} MB")
-        log_to_csv("Memory_Snapshot", f"{label_prefix}_cpu_rss_mb", cpu_rss, strategy_label, prompt_n)
-
-        if "cuda_allocated_mb" in snapshot:
-            cuda_alloc = snapshot['cuda_allocated_mb']
-            cuda_max_alloc = snapshot['cuda_max_allocated_mb']
-            cuda_reserved = snapshot['cuda_reserved_mb']
-            cuda_max_reserved = snapshot['cuda_max_reserved_mb']
-            print0(f"  CUDA Allocated: {cuda_alloc:.2f} MB | Max Allocated: {cuda_max_alloc:.2f} MB")
-            print0(f"  CUDA Reserved: {cuda_reserved:.2f} MB | Max Reserved: {cuda_max_reserved:.2f} MB")
-            log_to_csv("Memory_Snapshot", f"{label_prefix}_cuda_allocated_mb", cuda_alloc, strategy_label, prompt_n)
-            log_to_csv("Memory_Snapshot", f"{label_prefix}_cuda_max_allocated_mb", cuda_max_alloc, strategy_label, prompt_n)
-            log_to_csv("Memory_Snapshot", f"{label_prefix}_cuda_reserved_mb", cuda_reserved, strategy_label, prompt_n)
-            log_to_csv("Memory_Snapshot", f"{label_prefix}_cuda_max_reserved_mb", cuda_max_reserved, strategy_label, prompt_n)
-        elif "mps_allocated_mb" in snapshot:
-            mps_alloc = snapshot['mps_allocated_mb']
-            print0(f"  MPS Allocated: {mps_alloc:.2f} MB")
-            log_to_csv("Memory_Snapshot", f"{label_prefix}_mps_allocated_mb", mps_alloc, strategy_label, prompt_n)
-
-def run_generation_benchmark(model, tokenizer, initial_ids, num_tokens_to_gen, current_strategy_label, current_prompt_n, device):
     rank = dist.get_rank() if dist.is_initialized() else 0
-    print_label = f"{current_strategy_label} (N={current_prompt_n})"
-    print0(f"\n[Benchmark] {print_label}: Generating {num_tokens_to_gen} tokens...")
-    current_ids = initial_ids.clone()
-    past_key_value_states = None
-    token_times, generated_text = [], []
+    ids = input_ids.clone().to(device)
 
-    # Memory profiling for generation
-    if device.type == "cuda" and rank == 0:
-        torch.cuda.reset_peak_memory_stats()
-
-    mem_before_gen = get_memory_snapshot(device.type, rank)
-
-    # Prefill: process entire input prompt and generate KV cache
-    input_seq_len = current_ids.shape[1]
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    prefill_start = time_module.perf_counter()
-
-    logits, past_key_value_states = model(current_ids, past_key_value_states=None, use_cache=True)
-    first_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(-1)
+    # Get strategy for comm timing (ring only)
+    strategy = getattr(model, 'distributed_strategy', None)
+    if is_ring and isinstance(strategy, RingAttentionStrategy):
+        strategy.reset_comm_time()
 
     if device.type == "cuda":
         torch.cuda.synchronize()
-    prefill_latency_ms = (time_module.perf_counter() - prefill_start) * 1000
 
-    if rank == 0:
-        print0(f"  Prefill latency: {prefill_latency_ms:.2f} ms ({input_seq_len} tokens)")
-        log_to_csv("Prefill_Latency", "Prefill_Time_ms", prefill_latency_ms, current_strategy_label, current_prompt_n)
-        log_to_csv("Prefill_Latency", "Input_Seq_Length", input_seq_len, current_strategy_label, current_prompt_n)
+    # Prefill (TTFT)
+    t0 = time.perf_counter()
+    out = model.forward(ids, use_cache=True)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    ttft_ms = (time.perf_counter() - t0) * 1000
 
-    token_str = tokenizer.convert_ids_to_tokens([first_token.item()])
-    token_text = tokenizer.convert_tokens_to_string(token_str)
-    generated_text.append(token_text)
-    current_ids = torch.cat([current_ids, first_token], dim=1)
-    token_times.append(prefill_latency_ms)
+    logits, cache = (out[0], out[1]) if isinstance(out, tuple) else (out.logits, out.past_key_value_states)
+    last_token = ids[:, -1:]
 
-    # Decode: generate remaining tokens using KV cache
-    for i in range(1, num_tokens_to_gen):
-        input_ids = current_ids[:, -1:]
+    # Decode
+    decode_times = []
+    for _ in range(num_decode):
         if device.type == "cuda":
             torch.cuda.synchronize()
-        start = time_module.perf_counter()
-
-        logits, past_key_value_states = model(input_ids, past_key_value_states=past_key_value_states, use_cache=True)
-        next_token = torch.argmax(logits[:, -1, :], dim=-1).unsqueeze(-1)
-
+        t0 = time.perf_counter()
+        out = model.forward(last_token, past_key_value_states=cache, use_cache=True)
         if device.type == "cuda":
             torch.cuda.synchronize()
-        duration = (time_module.perf_counter() - start) * 1000
-        token_times.append(duration)
+        decode_times.append((time.perf_counter() - t0) * 1000)
 
-        token_str = tokenizer.convert_ids_to_tokens([next_token.item()])
-        token_text = tokenizer.convert_tokens_to_string(token_str)
-        generated_text.append(token_text)
-        current_ids = torch.cat([current_ids, next_token], dim=1)
+        logits, cache = (out[0], out[1]) if isinstance(out, tuple) else (out.logits, out.past_key_value_states)
+        last_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
 
-    mem_after_gen = get_memory_snapshot(device.type, rank)
-    print_memory_snapshot(f"During Generation ({print_label}) - Before", mem_before_gen, rank, strategy_label=current_strategy_label, prompt_n=current_prompt_n)
-    print_memory_snapshot(f"During Generation ({print_label}) - After (Peak for CUDA)", mem_after_gen, rank, strategy_label=current_strategy_label, prompt_n=current_prompt_n)
+    avg_decode_ms = statistics.mean(decode_times)
+    total_time_ms = ttft_ms + sum(decode_times)
+
+    # Get comm time and compute ratio (ring only)
+    comm_time_ms = 0.0
+    compute_comm_ratio = None
+    if is_ring and isinstance(strategy, RingAttentionStrategy):
+        comm_time_ms = strategy.get_comm_time_ms()
+        compute_time_ms = total_time_ms - comm_time_ms
+        if comm_time_ms > 0:
+            compute_comm_ratio = compute_time_ms / comm_time_ms
+
     if rank == 0:
-        avg_time = statistics.mean(token_times)
-        median_time = statistics.median(token_times)
-        full_generated_sequence = '-'.join(generated_text)
-        print0(f"\nGenerated Sequence ({print_label}): {full_generated_sequence}")
-        log_to_csv("Generation_Result", "Generated_Sequence", full_generated_sequence, current_strategy_label, current_prompt_n)
+        print0(f"\n{label}:")
+        msg = f"  TTFT: {ttft_ms:.2f} ms | Avg Decode: {avg_decode_ms:.2f} ms | Total: {total_time_ms:.2f} ms"
+        if is_ring:
+            msg += f" | Comm: {comm_time_ms:.2f} ms"
+            if compute_comm_ratio:
+                msg += f" | Compute/Comm: {compute_comm_ratio:.2f}"
+        print0(msg)
 
-        print0("Token Timings:")
-        for i, t in enumerate(token_times):
-            printable_token = generated_text[i].encode('unicode_escape').decode('utf-8')
-            print0(f"  * Token {i+1} ({printable_token}): {t:.2f} ms")
-            log_to_csv("Token_Time", f"Token_{i+1}_Time_ms", t, current_strategy_label, current_prompt_n)
-            log_to_csv("Token_Time", f"Token_{i+1}_Text", printable_token, current_strategy_label, current_prompt_n)
+    return {
+        "ttft_ms": ttft_ms, "avg_decode_ms": avg_decode_ms, "total_time_ms": total_time_ms,
+        "comm_time_ms": comm_time_ms, "compute_comm_ratio": compute_comm_ratio, "logits": logits
+    }
 
-        total_time = sum(token_times)
-        print0(f"\nSummary for {print_label}:\n  Average: {avg_time:.2f} ms\n  Median: {median_time:.2f} ms\n  Total: {total_time:.2f} ms")
-        log_to_csv("Generation_Summary", "Average_Time_ms", avg_time, current_strategy_label, current_prompt_n)
-        log_to_csv("Generation_Summary", "Median_Time_ms", median_time, current_strategy_label, current_prompt_n)
-        log_to_csv("Generation_Summary", "Total_Time_ms", total_time, current_strategy_label, current_prompt_n)
 
 def main():
     args = parse_args()
-    set_determinism()
-
-    # --- Enhanced Diagnostic Information ---
-    print0("--- Benchmark Arguments ---")
-    for arg_name, arg_value in sorted(vars(args).items()):
-        print0(f"  {arg_name}: {arg_value}")
-        # CSV logging for args will be done after rank is determined and CSV is initialized
-    print0("---------------------------")
-
-    print0("--- System Configuration ---")
-    sys_configs_to_log = {"PyTorch Version": torch.__version__}
-    if args.device_type == "cuda" and torch.cuda.is_available():
-        sys_configs_to_log["CUDA Version"] = torch.version.cuda
-        try:
-            sys_configs_to_log["NCCL Version"] = str(torch.cuda.nccl.version())
-        except AttributeError:
-            sys_configs_to_log["NCCL Version"] = "Not available via torch.cuda.nccl.version()"
-    
-    for k, v in sys_configs_to_log.items():
-        print0(f"  {k}: {v}")
-        # CSV logging for sys_configs will be done after rank is determined and CSV is initialized
-    print0("---------------------------")
-
-    print0("--- Relevant Environment Variables ---")
-    env_vars_to_log = ["OMP_NUM_THREADS", "NCCL_DEBUG", "NCCL_P2P_DISABLE", "TORCH_DISTRIBUTED_DEBUG", "CUDA_VISIBLE_DEVICES",
-                       "SLURM_JOB_ID", "SLURM_JOB_NODELIST", "SLURM_NNODES", "SLURM_NTASKS_PER_NODE", "SLURM_PROCID", "SLURM_LOCALID"]
-    logged_env_vars = {}
-    for var in env_vars_to_log:
-        value = os.getenv(var)
-        if value is not None:
-            print0(f"  {var}: {value}")
-            logged_env_vars[var] = value
-            # CSV logging for env_vars will be done after rank is determined and CSV is initialized
-    print0("----------------------------------")
-
-    local_rank = int(os.getenv("LOCAL_RANK", -1))
-    world_size = int(os.getenv("WORLD_SIZE", 1))
     rank = int(os.getenv("RANK", 0))
+    local_rank = int(os.getenv("LOCAL_RANK", 0))
+    world_size = int(os.getenv("WORLD_SIZE", 1))
 
-    init_csv_logging(args.csv_output_file, rank)
-
-    # Now log arguments, system configs, and env vars to CSV if rank 0
-    if rank == 0:
-        for arg_name, arg_value in sorted(vars(args).items()):
-            log_to_csv("Config_Argument", arg_name, arg_value)
-        for k, v in sys_configs_to_log.items():
-            log_to_csv("Config_System", k, v)
-        for k, v in logged_env_vars.items():
-            log_to_csv("Config_EnvVar", k, v)
-
-    if args.device_type == "mps":
-        if not torch.backends.mps.is_available():
-            raise EnvironmentError("MPS not available.")
-        if world_size > 1:
-            raise RuntimeError("Distributed MPS not supported.")
-        device = torch.device("mps")
-    elif world_size > 1:
-        if args.device_type == "cuda" and not torch.cuda.is_available():
-            raise EnvironmentError("CUDA requested for distributed run but not available.")
-        
-        print(f"[Rank {rank}/{world_size}] Initializing distributed process group...")
-        if args.device_type == "cuda":
-            torch.cuda.set_device(local_rank)
-            print(f"[Rank {rank}/{world_size}] Set CUDA device to: {torch.cuda.current_device()} ({torch.cuda.get_device_name(torch.cuda.current_device()) if torch.cuda.is_available() else 'N/A'})")
-            backend = "nccl"
-        else:
-            backend = "gloo"
+    # Initialize distributed
+    if world_size > 1 and args.device_type == "cuda":
+        torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
-            dist.init_process_group(backend=backend)
-            print(f"[Rank {rank}/{world_size}] Distributed process group initialized with backend '{backend}'.")
-        device = torch.device(args.device_type, local_rank)
-        print(f"[Rank {rank}/{world_size}] Using device: {device}")
-
+            dist.init_process_group(backend="nccl")
+        device = torch.device("cuda", local_rank)
     else:
         device = torch.device(args.device_type)
 
-    try:
-        parsed_dtype = getattr(torch, args.dtype)
-        # Initial memory snapshot after basic setup and before heavy lifting
-        # Placed here to capture state before any major torch operations beyond dtype parsing
-        initial_mem_snapshot = get_memory_snapshot(args.device_type, rank)
-        print_memory_snapshot("Initial_Script_Load", initial_mem_snapshot, rank)
-    except AttributeError:
-        print0(f"[WARNING] Invalid dtype '{args.dtype}', defaulting to float32.")
-        parsed_dtype = torch.float32
+    dtype = getattr(torch, args.dtype)
+    torch.set_default_dtype(dtype)
 
-    torch.set_default_dtype(parsed_dtype)
-
-    tokenizer = tokenizers.get_tokenizer(args.tokenizer) if rank == 0 else None
+    # Load tokenizer
+    tokenizer = tokenizers.get_tokenizer(args.tokenizer)
     if world_size > 1:
         dist.barrier()
-        if rank != 0:
-            tokenizer = tokenizers.get_tokenizer(args.tokenizer)
 
-    strategies = [("Ring Attention", "ring"), ("Regular Attention", NoOpStrategy)]
+    # Create input tokens
+    vocab_size = tokenizer.vocab_size() if hasattr(tokenizer, 'vocab_size') else 32000
+    ids = torch.randint(100, vocab_size - 100, (args.batch_size, args.num_tokens), dtype=torch.long, device=device)
+
+    if world_size > 1:
+        dist.broadcast(ids, src=0)
+        dist.barrier()
+
+    print0(f"\nBenchmark: {args.num_tokens} prompt tokens, {args.num_decode_tokens} decode tokens")
+
+    # Define strategies
+    strategies = [("Ring", "ring"), ("Regular", NoOpStrategy)]
     if not args.run_ring_first:
         strategies.reverse()
 
-    prompt_n_values = [10,20, 50, 100,200, 400, 500, 700, 800]
+    results = []
+    for label, strategy in strategies:
+        # Skip Ring if not distributed
+        if strategy == "ring" and not dist.is_initialized():
+            print0(f"Skipping {label} (requires distributed)")
+            continue
 
-    for strategy_label, strategy in strategies:
+        # Regular only runs on rank 0
+        is_regular = strategy is NoOpStrategy
+        if is_regular and rank != 0:
+            if world_size > 1:
+                dist.barrier()
+            continue
 
         if args.device_type == "cuda":
             torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
 
-        print0(f"\n=== Benchmarking: {strategy_label} ===")
-        should_run = strategy is not NoOpStrategy or rank == 0
-        model = None
+        model = setup_model(args, strategy, dtype)
+        is_ring = (strategy == "ring")
+        result = run_benchmark(model, ids, args.num_decode_tokens, label, device, is_ring=is_ring)
+        result["strategy"] = label
+        results.append(result)
 
-        mem_before_current_model_load = get_memory_snapshot(args.device_type, rank)
-        print_memory_snapshot(f"Before_Model_Load_{strategy_label.replace(' ', '_')}", mem_before_current_model_load, rank, strategy_label=strategy_label)
-
-        if should_run:
-            warnings.filterwarnings("ignore", message=r"Keys from checkpoint.*rotary_emb\.inv_freq")
-            model = setup_model(args, strategy, dtype=parsed_dtype).eval()
-            torch.set_grad_enabled(False)
-            mem_after_model_load = get_memory_snapshot(args.device_type, rank)
-            print_memory_snapshot(f"After_Model_Load_{strategy_label.replace(' ', '_')}", mem_after_model_load, rank, strategy_label=strategy_label)
-
-            if hasattr(model, 'config'):
-                print0(f"--- Model Config ({strategy_label}) ---")
-                model_configs_to_log = {
-                    "Architecture": args.architecture,
-                    "Variant": args.variant,
-                    "Layers": getattr(model.config, 'nlayers', 'N/A'),
-                    "Heads": getattr(model.config, 'nheads', 'N/A'),
-                    "Hidden_Dim": getattr(model.config, 'emb_dim', getattr(model.config, 'dim', 'N/A')),
-                    "Vocab_Size": getattr(model.config, 'src_vocab_size', 'N/A')
-                }
-                for k, v in model_configs_to_log.items():
-                    print0(f"  {k}: {v}")
-                    if rank == 0: # Model config is same across ranks, log once
-                        log_to_csv("Model_Config", k, v, strategy_label=strategy_label)
-                print0("--------------------------")
-
-            warnings.resetwarnings()
+        del model
+        gc.collect()
+        if args.device_type == "cuda":
+            torch.cuda.empty_cache()
 
         if world_size > 1:
             dist.barrier()
 
-        for n_val in prompt_n_values:
-            prompt_text = ", ".join(map(str, range(n_val)))
-            if rank == 0:
-                tokens = tokenizer.tokenize(prompt_text)
-                prompt_ids = tokenizer.convert_tokens_to_ids(tokens)
-                ids_tensor = torch.tensor(prompt_ids, dtype=torch.long).unsqueeze(0).repeat(args.batch_size, 1)
-                ids = ids_tensor.to(device)
-            else:
-                ids = None
+    # Write summary CSV
+    if rank == 0 and args.summary_csv and results:
+        file_exists = os.path.exists(args.summary_csv)
+        with open(args.summary_csv, "a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(SUMMARY_HEADERS)
+            for r in results:
+                ratio_str = f"{r['compute_comm_ratio']:.2f}" if r['compute_comm_ratio'] else "N/A"
+                writer.writerow([r["strategy"], args.num_tokens, f"{r['ttft_ms']:.2f}",
+                                f"{r['avg_decode_ms']:.2f}", f"{r['total_time_ms']:.2f}",
+                                f"{r['comm_time_ms']:.2f}", ratio_str])
 
-            if world_size > 1:
-                shape_list = [None]
-                if rank == 0:
-                    shape_list[0] = ids.shape
-                dist.broadcast_object_list(shape_list, src=0)
+    # Print summary table
+    if rank == 0 and results:
+        print0(f"\n{'Strategy':<10} {'Tokens':<8} {'TTFT':<10} {'Avg Decode':<12} {'Total':<10} {'Comm':<10} {'Comp/Comm':<10}")
+        print0("-" * 70)
+        for r in results:
+            ratio_str = f"{r['compute_comm_ratio']:.2f}" if r['compute_comm_ratio'] else "N/A"
+            print0(f"{r['strategy']:<10} {args.num_tokens:<8} {r['ttft_ms']:<10.2f} {r['avg_decode_ms']:<12.2f} {r['total_time_ms']:<10.2f} {r['comm_time_ms']:<10.2f} {ratio_str:<10}")
 
-                if rank != 0:
-                    ids = torch.empty(shape_list[0], dtype=torch.long, device=device)
-                dist.broadcast(ids, src=0)
-                dist.barrier()
-
-            if rank == 0:
-                print0(f"\n-- Prompt N={n_val} for {strategy_label} --")
-                print0(f"[INFO] Prompt: '{prompt_text}'")
-                log_to_csv("Prompt_Info", "N_Value", n_val, strategy_label, n_val)
-                log_to_csv("Prompt_Info", "Prompt_Text_Length", len(prompt_text), strategy_label, n_val)
-                # Optionally log full prompt text, can be large:
-                # log_to_csv("Prompt_Info", "Prompt_Text_Full", prompt_text, strategy_label, n_val)
-                print0(f"[INFO] Tokens: {ids.shape[1]}, Batch: {args.batch_size}")
-                log_to_csv("Prompt_Info", "Token_Count", ids.shape[1], strategy_label, n_val)
-                log_to_csv("Prompt_Info", "Batch_Size", args.batch_size, strategy_label, n_val)
-
-            if should_run:
-                run_generation_benchmark(model, tokenizer, ids, args.num_tokens_to_benchmark, strategy_label, n_val, device)
-
-            if world_size > 1:
-                dist.barrier()
-
-        if model is not None:
-            mem_before_model_del = get_memory_snapshot(args.device_type, rank)
-            print_memory_snapshot(f"Before_Model_Deletion_{strategy_label.replace(' ', '_')}", mem_before_model_del, rank, strategy_label=strategy_label)
-            del model
-            gc.collect() # Explicitly run garbage collection
-            if args.device_type == "cuda":
-                torch.cuda.empty_cache()
-            # Snapshot after deletion and cache clearing
-            mem_after_model_del = get_memory_snapshot(args.device_type, rank)
-            print_memory_snapshot(f"After_Model_Deletion_{strategy_label.replace(' ', '_')}", mem_after_model_del, rank, strategy_label=strategy_label)
-        if world_size > 1:
-            dist.barrier()
 
 if __name__ == "__main__":
     try:
         main()
     finally:
-        # Ensure CSV is closed if initialized
-        rank_for_cleanup = int(os.getenv("RANK", 0)) # Re-check rank in case env changed or for safety
-        if rank_for_cleanup == 0:
-            close_csv_logging()
-
         if dist.is_initialized():
             dist.destroy_process_group()
-`
