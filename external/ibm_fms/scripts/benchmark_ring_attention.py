@@ -92,7 +92,7 @@ def benchmark(rank, world_size, implementation):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Ring Attention Benchmark')
     parser.add_argument('--implementation', type=str, default='ring_attention',
-                        choices=['ring_attention', 'ring_attention_pipelined'],
+                        choices=['ring_attention', 'ring_attention_pipelined', 'ring_attention_blocking'],
                         help='Attention implementation to benchmark')
     args = parser.parse_args()
 
