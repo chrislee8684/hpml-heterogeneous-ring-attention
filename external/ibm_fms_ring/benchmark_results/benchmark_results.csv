@@ -1,0 +1,6 @@
+Number_Count,Input_Tokens,GPUs,Avg_Time_Token_Ring_ms,Avg_Time_Token_Regular_ms,Speedup,Outputs_Match
+100,298,2,679.65,24.08,.03,FAILED
+500,1498,2,665.50,25.02,.03,FAILED
+1000,2998,2,682.06,26.41,.03,FAILED
+1500,4998,2,676.99,29.51,.04,FAILED
+2000,6998,2,663.53,35.01,.05,FAILED
