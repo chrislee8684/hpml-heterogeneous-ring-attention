@@ -26,7 +26,7 @@ run_benchmark() {
 
       torchrun --nproc_per_node=$num_gpus scripts/llama_ring_sg/benchmark_ring.py \
           --architecture llama \
-          --variant 3-8b \
+          --variant 3.1-8b \
           --model_path "$MODEL_PATH" \
           --device_type cuda \
           --num_tokens $num_tokens \
@@ -38,7 +38,7 @@ run_benchmark() {
 
 echo "Ring Attention Benchmark - $(date)" | tee "$LOG_FILE"
 
-for num_count in 256 512 1024 4096 8192; do
+for num_count in 256 512 1024 4096 8192 16384 32768 65536; do
     echo "Running: $num_count tokens" | tee -a "$LOG_FILE"
     run_benchmark $num_count $NUM_GPUS 2>&1 | tee -a "$LOG_FILE"
 done

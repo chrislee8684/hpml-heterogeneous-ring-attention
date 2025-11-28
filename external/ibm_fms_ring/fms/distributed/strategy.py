@@ -165,12 +165,12 @@ class TensorParallelStrategy(DistributedStrategy):
 class RingAttentionStrategy(DistributedStrategy):
     def __init__(
         self,
-        block_size: int = 8192,
+        block_size: Optional[int] = None,
         group: Optional[dist.ProcessGroup] = None,
         from_meta: bool = False
     ):
         super().__init__(from_meta)
-        self.block_size = block_size
+        
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             self.group = group
             self.rank = torch.distributed.get_rank(group=self.group)
@@ -183,6 +183,8 @@ class RingAttentionStrategy(DistributedStrategy):
                 "[INFO] RingAttentionStrategy: torch.distributed not initialized,"
                 " defaulting to world_size=1, rank=0."
             )
+
+        self.block_size = block_size if block_size is not None else 65536
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
         # HPML: Communication timing instrumentation
