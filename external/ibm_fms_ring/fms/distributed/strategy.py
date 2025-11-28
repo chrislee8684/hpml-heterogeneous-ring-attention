@@ -185,7 +185,7 @@ class RingAttentionStrategy(DistributedStrategy):
                 " defaulting to world_size=1, rank=0."
             )
 
-        self.block_size = block_size if block_size is not None else 65536
+        self.block_size = block_size 
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
         # HPML: Communication timing instrumentation
@@ -230,7 +230,8 @@ class RingAttentionStrategy(DistributedStrategy):
             self._local_valid_len = seq_len
             return x
         
-        self.block_size = math.ceil(seq_len / self.world_size)
+        if self.block_size is None or seq_len > self.block_size:
+            self.block_size = math.ceil(seq_len / self.world_size)
         start = self.rank * self.block_size
         end = min(start + self.block_size, seq_len)
         self._local_valid_len = max(0, end - start)

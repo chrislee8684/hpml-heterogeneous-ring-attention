@@ -1,12 +1,13 @@
 #!/bin/bash
 #SBATCH -p gpu-preempt
-#SBATCH -t 0:59:00
-#SBATCH --gpus=2
+#SBATCH -t 0:10:00
+#SBATCH --gpus-per-node=2
 #SBATCH --constraint=a100
 #SBATCH --mem=26G
 #SBATCH -o slurm-%j.out
 #SBATCH -e slurm-%j.err
 #SBATCH --job-name=ring_bench
+#SBATCH --nodes=1
 set -e
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
@@ -18,6 +19,8 @@ NUM_GPUS=2
 SUMMARY_CSV="$RESULTS_DIR/summary_${TIMESTAMP}.csv"
 LOG_FILE="$RESULTS_DIR/run_${TIMESTAMP}.log"
 
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+nvidia-smi
 mkdir -p "$RESULTS_DIR"
 
 run_benchmark() {
