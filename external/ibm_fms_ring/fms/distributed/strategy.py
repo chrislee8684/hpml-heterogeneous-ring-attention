@@ -3,6 +3,7 @@ from abc import abstractmethod
 from typing import List, Optional, Tuple
 
 import torch
+import math
 from torch import Tensor, nn
 import torch.distributed
 import torch.distributed as dist # Keep this for P2POp if not already imported
@@ -228,6 +229,8 @@ class RingAttentionStrategy(DistributedStrategy):
         if self.world_size == 1:
             self._local_valid_len = seq_len
             return x
+        
+        self.block_size = math.ceil(seq_len / self.world_size)
         start = self.rank * self.block_size
         end = min(start + self.block_size, seq_len)
         self._local_valid_len = max(0, end - start)
