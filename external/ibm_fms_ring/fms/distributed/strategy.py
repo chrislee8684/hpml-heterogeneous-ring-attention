@@ -188,9 +188,21 @@ class RingAttentionStrategy(DistributedStrategy):
         self.block_size = block_size 
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
-        # HPML: Communication timing instrumentation
         self._comm_time_ms: float = 0.0
+        self._decode_step_counter = 0
+        self._is_decode_phase = False
 
+    def start_decode_phase(self):
+      self._is_decode_phase = True
+      self._decode_step_counter = 0
+
+    def get_decode_q_owner(self) -> int:
+        """Returns which GPU should compute Q for this decode step"""
+        return self._decode_step_counter % self.world_size
+
+    def increment_decode_step(self):
+        self._decode_step_counter += 1
+        
     def reset_comm_time(self):
         """HPML: Reset communication time counter."""
         self._comm_time_ms = 0.0
