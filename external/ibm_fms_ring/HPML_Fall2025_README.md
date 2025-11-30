@@ -2,40 +2,31 @@
 
 ## Code Modifications
 
-### 1. `fms/distributed/strategy.py`
-Added communication timing to `RingAttentionStrategy` class:
-- `_comm_time_ms` variable to accumulate P2P communication time
-- `reset_comm_time()` and `get_comm_time_ms()` methods
-- Timing instrumentation around `batch_isend_irecv()` calls
-
-### 2. `scripts/llama_ring_sg/benchmark_ring.py`
-Benchmark script comparing Ring vs Regular Attention:
-- Measures TTFT (prefill), decode time, and compute/comm ratio
-- Outputs results to CSV for comparison tables
-
-### 3. `run_all_benchmarks.sh`
-Shell script to run benchmarks across token counts (100, 500, 1000, 1500, 2000).
-
-## Metrics
-
-| Metric | Description |
-|--------|-------------|
-| TTFT | Time To First Token (prefill) |
-| Avg Decode | Average time per decoded token |
-| Comm Time | P2P communication time (Ring only) |
-| Compute/Comm Ratio | Compute time / Communication time |
+1. `fms/distributed/strategy.py`
+    - Modified RingAttentionStrategy to use async P2P communications
+2. `fms/distributed/llama_ring.py`
+    - Modified ring loop with async overlap and online softmax
+3. `temp_testing/`
+    - `test_ring_prefill.py`: test for ring attention without model loading
+    - `test_ring_prefill.sh`: SLURM script to run test on 2 GPUs
+4. `run_all_benchmarks.sh` (doesn't work right now. need to add option to only run prefill and not decode)
+    - Runs benchmarks across token counts (256, 512, 1024, 4096, 8192, 16384, 32768, 65536)
+    - Measures TTFT (prefill time), decode time, and comm time
+    - Outputs results to `benchmark_results/summary_<timestamp>.csv`
 
 ## Usage
 
-```bash
-# Full suite
-bash run_all_benchmarks.sh
+### First install requirements
 
-# Single run
-torchrun --nproc_per_node=2 scripts/llama_ring_sg/benchmark_ring.py \
-    --num_tokens 1000 --summary_csv results.csv
+```bash
+cd hpml-heterogeneous-ring-attention
+pip install -e .
 ```
 
-## Output
+```bash
+# Simple ring attention test (no model)
+cd hpml-heterogeneous-ring-attention/external/ibm_fms_ring
+torchrun --nproc_per_node=2 hpml_testing/test_ring_prefill.py
 
-Results saved to `benchmark_results/summary_<timestamp>.csv`
+# Full benchmark suite with model
+sbatch run_all_benchmarks.sh
