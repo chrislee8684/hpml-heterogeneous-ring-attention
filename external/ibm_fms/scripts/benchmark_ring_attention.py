@@ -47,7 +47,7 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def benchmark(rank, world_size, implementation):
+def benchmark(rank, world_size, implementation, seq_len):
     setup(rank, world_size)
     torch.cuda.set_device(rank)
 
@@ -55,7 +55,6 @@ def benchmark(rank, world_size, implementation):
     emb_dim = 768
     nheads = 12
     kvheads = 12
-    seq_len = 4096
     batch_size = 1
 
     model = SimpleModel(emb_dim, nheads, kvheads, implementation).to(rank)
@@ -96,6 +95,8 @@ if __name__ == "__main__":
     parser.add_argument('--implementation', type=str, default='ring_attention',
                         choices=['ring_attention', 'ring_attention_pipelined', 'ring_attention_blocking'],
                         help='Attention implementation to benchmark')
+    parser.add_argument('--seq_len', type=int, default=4096,
+                        help='Sequence length for the benchmark')
     args = parser.parse_args()
 
     # To run this benchmark, use the following command:
@@ -106,7 +107,7 @@ if __name__ == "__main__":
 
     print(f"Starting benchmark on rank {rank} of {world_size} GPUs.")
     if world_size > 1:
-        benchmark(rank, world_size, args.implementation)
+        benchmark(rank, world_size, args.implementation, args.seq_len)
     else:
         print("This benchmark is intended for multi-GPU setups. Running on a single GPU.")
-        benchmark(0, 1, args.implementation)
+        benchmark(0, 1, args.implementation, args.seq_len)
