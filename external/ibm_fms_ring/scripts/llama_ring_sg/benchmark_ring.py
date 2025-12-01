@@ -106,7 +106,7 @@ def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
         logits, cache = (out[0], out[1]) if isinstance(out, tuple) else (out.logits, out.past_key_value_states)
         last_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
 
-    avg_decode_ms = statistics.mean(decode_times)
+    avg_decode_ms = statistics.mean(decode_times) if decode_times else 0.0
     total_time_ms = ttft_ms + sum(decode_times)
 
     # Get comm time and compute ratio (ring only)

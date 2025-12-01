@@ -33,7 +33,7 @@ run_benchmark() {
           --model_path "$MODEL_PATH" \
           --device_type cuda \
           --num_tokens $num_tokens \
-          --num_decode_tokens 30 \
+          --num_decode_tokens 0 \
           --batch_size 1 \
           --run_ring_first \
           --summary_csv "$SUMMARY_CSV"
