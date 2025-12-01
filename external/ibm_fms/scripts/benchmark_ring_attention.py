@@ -8,6 +8,13 @@ from fms.modules.attention import MultiHeadAttention
 import fms.modules.ring_attention
 
 
+dtype_map = {
+    "float32": torch.float32,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+}
+
+
 class SimpleModel(torch.nn.Module):
     def __init__(self, emb_dim, nheads, kvheads, attn_name):
         super().__init__()
@@ -47,9 +54,10 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def benchmark(rank, world_size, implementation, seq_len):
+def benchmark(rank, world_size, implementation, seq_len, dtype_str):
     setup(rank, world_size)
     torch.cuda.set_device(rank)
+    dtype = dtype_map[dtype_str]
 
     # Model parameters
     emb_dim = 768
@@ -57,10 +65,10 @@ def benchmark(rank, world_size, implementation, seq_len):
     kvheads = 12
     batch_size = 1
 
-    model = SimpleModel(emb_dim, nheads, kvheads, implementation).to(rank)
+    model = SimpleModel(emb_dim, nheads, kvheads, implementation).to(rank).to(dtype)
 
     # Dummy data
-    x = torch.randn(batch_size, seq_len // world_size, emb_dim).to(rank)
+    x = torch.randn(batch_size, seq_len // world_size, emb_dim, dtype=dtype).to(rank)
 
     # Warmup
     for _ in range(5):
@@ -79,6 +87,7 @@ def benchmark(rank, world_size, implementation, seq_len):
         print(f"Implementation: {implementation}")
         print(f"World Size: {world_size}")
         print(f"Sequence Length (per GPU): {seq_len // world_size}")
+        print(f"Data Type: {dtype_str}")
         print(f"Total time for {n_iterations} iterations: {end_time - start_time:.4f}s")
         print(
             f"Throughput: {(n_iterations * batch_size) / (end_time - start_time):.2f} samples/s"
@@ -97,6 +106,8 @@ if __name__ == "__main__":
                         help='Attention implementation to benchmark')
     parser.add_argument('--seq_len', type=int, default=4096,
                         help='Sequence length for the benchmark')
+    parser.add_argument('--dtype', type=str, default='float32', choices=['float32', 'float16', 'bfloat16'],
+                        help='Data type for the benchmark')
     args = parser.parse_args()
 
     # To run this benchmark, use the following command:
@@ -107,7 +118,7 @@ if __name__ == "__main__":
 
     print(f"Starting benchmark on rank {rank} of {world_size} GPUs.")
     if world_size > 1:
-        benchmark(rank, world_size, args.implementation, args.seq_len)
+        benchmark(rank, world_size, args.implementation, args.seq_len, args.dtype)
     else:
         print("This benchmark is intended for multi-GPU setups. Running on a single GPU.")
-        benchmark(0, 1, args.implementation, args.seq_len)
+        benchmark(0, 1, args.implementation, args.seq_len, args.dtype)
