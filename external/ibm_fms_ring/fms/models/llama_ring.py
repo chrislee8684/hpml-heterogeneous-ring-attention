@@ -122,7 +122,16 @@ class RingAttentionKernel:
             k = k_new
             v = v_new
 
-        scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
+        # scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
+
+
+        
+        if attn_module.scale_factor:
+            # If FMS gives a multiplier (1/sqrt(d)), we invert it to get the divisor (sqrt(d))
+            scale = 1.0 / attn_module.scale_factor
+        else:
+            # Otherwise calculate default divisor
+            scale = math.sqrt(attn_module.emb_kq_per_head)
 
         accum_dtype = torch.float32
 
@@ -305,8 +314,29 @@ class RingAttentionKernel:
                 current_attention_mask_slice = (mask[..., q_start:q_start+num_valid_tokens, block_offset_for_source_rank:block_offset_for_source_rank+k_len_current_block]
                         if mask is not None else None)
                 current_scores = RingAttentionKernel._attn_scores(q_fp32, k_fp32, query_global_indices, key_block_global_indices, scale, current_attention_mask_slice, causal)
-                score_delta = torch.where(torch.isneginf(max_score), float("-inf"), current_scores - max_score)
-                exp_scores = torch.exp(score_delta.clamp(min=log_min_exp_threshold, max=log_max_exp_threshold))
+                # score_delta = torch.where(torch.isneginf(max_score), float("-inf"), current_scores - max_score)
+                # exp_scores = torch.exp(score_delta.clamp(min=log_min_exp_threshold, max=log_max_exp_threshold))
+
+                # Calculate delta
+                score_delta = current_scores - max_score
+
+                # Create a mask for values that are effectively -inf (masked out)
+                # We treat anything very small as masked to be safe, or check specifically for -inf
+                masked_elements = score_delta < -10000 
+
+                # Clamp strictly for numerical stability of valid scores
+                # But DO NOT clamp the -inf values up to the threshold
+                clamped_delta = score_delta.clamp(min=log_min_exp_threshold, max=log_max_exp_threshold)
+
+                # Apply exp
+                exp_scores = torch.exp(clamped_delta)
+
+                # FORCE masked elements to be 0
+                exp_scores = exp_scores.masked_fill(masked_elements, 0.0)
+
+                # Also handle the global max being -inf (if a whole row is masked)
+                exp_scores = exp_scores.masked_fill(torch.isneginf(max_score), 0.0)
+
                 # exp_scores = exp_scores.masked_fill(torch.isneginf(max_score), 0.0) # This line is likely redundant
                 numerator += torch.matmul(exp_scores, v_fp32.narrow(2, 0, k_len_current_block))
                 denomminator += exp_scores.sum(dim=-1, keepdim=True)
