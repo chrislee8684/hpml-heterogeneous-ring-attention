@@ -36,8 +36,10 @@ class SimpleModel(torch.nn.Module):
 
 
 def setup(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
+    if "MASTER_ADDR" not in os.environ:
+        os.environ["MASTER_ADDR"] = "localhost"
+    if "MASTER_PORT" not in os.environ:
+        os.environ["MASTER_PORT"] = "12355"
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
@@ -99,10 +101,12 @@ if __name__ == "__main__":
     # To run this benchmark, use the following command:
     # torchrun --nproc_per_node=<num_gpus> scripts/benchmark_ring_attention.py --implementation <implementation_name>
     
-    world_size = torch.cuda.device_count()
-    print(f"Found {world_size} GPUs.")
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    print(f"Starting benchmark on rank {rank} of {world_size} GPUs.")
     if world_size > 1:
-        torch.multiprocessing.spawn(benchmark, args=(world_size, args.implementation), nprocs=world_size, join=True)
+        benchmark(rank, world_size, args.implementation)
     else:
         print("This benchmark is intended for multi-GPU setups. Running on a single GPU.")
         benchmark(0, 1, args.implementation)
