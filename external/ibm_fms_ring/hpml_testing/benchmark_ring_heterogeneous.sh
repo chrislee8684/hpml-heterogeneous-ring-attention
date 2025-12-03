@@ -13,6 +13,11 @@ WEAK_GPU_PERCENTAGE=10
 SEQ_LEN=32768
 # --- End Configuration ---
 
+# Set up environment for torch.distributed
+export WORLD_SIZE=2
+export MASTER_ADDR='localhost'
+export MASTER_PORT='29500' # A free port on your system
+
 # Get the directory where this script resides (hpml_testing/)
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 # Set PYTHONPATH to the project root (parent of SCRIPT_DIR)
