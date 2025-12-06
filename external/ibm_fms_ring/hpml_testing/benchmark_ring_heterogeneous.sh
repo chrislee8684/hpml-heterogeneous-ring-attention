@@ -8,9 +8,9 @@
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
 # --- Configuration ---
-STRONG_GPU_PERCENTAGE=100
-WEAK_GPU_PERCENTAGE=10
-SEQ_LEN=32768
+STRONG_GPU_PERCENTAGE=${STRONG_GPU_PERCENTAGE:-100}
+WEAK_GPU_PERCENTAGE=${WEAK_GPU_PERCENTAGE:-10}
+SEQ_LEN=${SEQ_LEN:-32768}
 # --- End Configuration ---
 
 # Set up environment for torch.distributed
