@@ -83,7 +83,6 @@ def main():
         local_seq_len = sizes[rank]
         q_start = starts[rank]
 
-        block_lens = sizes
         block_size = max(sizes)
 
         print(f"[rank{rank}] PROPORTIONAL shard: start={q_start}, len={local_seq_len}")
@@ -100,18 +99,17 @@ def main():
         q_start = starts[rank]
         local_seq_len = sizes[rank]
 
-        block_lens = sizes
         block_size = base
 
         print(f"[rank{rank}] EVEN shard: start={q_start}, len={local_seq_len}")
 
     # ---------------------------------------------------------
     # Setup RingAttentionStrategy
-    # TRUE REQUIRED SIGNATURE:
-    #     RingAttentionStrategy(block_lens, block_size, group=None)
+    # Your strategy requires ONLY:
+    #       block_size
+    #       group
     # ---------------------------------------------------------
     strategy = RingAttentionStrategy(
-        block_lens=block_lens,
         block_size=block_size,
         group=None
     )
@@ -155,7 +153,9 @@ def main():
         _ = _compute_attention_ring_pass_kv(
             q, k, v, None, strategy,
             q_start, local_seq_len,
-            scale, accum_dtype, causal
+            scale,
+            accum_dtype,
+            causal
         )
     torch.cuda.synchronize()
 
@@ -169,7 +169,9 @@ def main():
         out = _compute_attention_ring_pass_kv(
             q, k, v, None, strategy,
             q_start, local_seq_len,
-            scale, accum_dtype, causal
+            scale,
+            accum_dtype,
+            causal
         )
 
     torch.cuda.synchronize()
