@@ -16,33 +16,65 @@ SEQ_LEN=${SEQ_LEN:-32768}
 # Set up environment for torch.distributed
 export WORLD_SIZE=2
 export MASTER_ADDR='localhost'
-export MASTER_PORT='29500' # A free port on your system
+export MASTER_PORT='29500'  # Must be free
 
-# Get the directory where this script resides (hpml_testing/)
+# Resolve script directory
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-# Set PYTHONPATH to the project root (parent of SCRIPT_DIR)
 export PYTHONPATH="$SCRIPT_DIR/../:$PYTHONPATH"
 
-echo "Starting benchmark with total sequence length: $SEQ_LEN"
-echo "Rank 0 (Strong GPU) will be set to $STRONG_GPU_PERCENTAGE%"
-echo "Rank 1 (Weak GPU) will be set to $WEAK_GPU_PERCENTAGE%"
-echo "-----------------------------------------------------"
+echo "====================================================="
+echo "Starting EVEN SHARDING benchmark"
+echo "Total sequence length: $SEQ_LEN"
+echo "Rank 0 throttle: $STRONG_GPU_PERCENTAGE%"
+echo "Rank 1 throttle: $WEAK_GPU_PERCENTAGE%"
+echo "====================================================="
 
-# Launch Rank 0 (Strong GPU) in the background
+# --- EVEN SHARDING RUN ---
+# Rank 0 (Strong GPU)
 export RANK=0
 export LOCAL_RANK=0
 CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE python3 "$SCRIPT_DIR/test_ring_prefill.py" \
     --total_seq_len $SEQ_LEN &
 
-# Launch Rank 1 (Weak GPU) in the background
+# Rank 1 (Weak GPU)
 export RANK=1
 export LOCAL_RANK=1
 CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$WEAK_GPU_PERCENTAGE python3 "$SCRIPT_DIR/test_ring_prefill.py" \
     --total_seq_len $SEQ_LEN &
 
-
-# Wait for both background processes to finish
 wait
 
-echo "-----------------------------------------------------"
-echo "Benchmark finished."
+echo "====================================================="
+echo "EVEN SHARDING benchmark finished"
+echo "====================================================="
+
+
+# Reuse same MASTER_PORT + WORLD_SIZE (two serial runs, no conflict)
+echo "====================================================="
+echo "Starting PROPORTIONAL SHARDING benchmark"
+echo "Total sequence length: $SEQ_LEN"
+echo "Rank 0 throttle: $STRONG_GPU_PERCENTAGE%"
+echo "Rank 1 throttle: $WEAK_GPU_PERCENTAGE%"
+echo "====================================================="
+
+# --- PROPORTIONAL SHARDING RUN ---
+# Rank 0 (Strong GPU)
+export RANK=0
+export LOCAL_RANK=0
+CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE python3 "$SCRIPT_DIR/test_ring_prefill.py" \
+    --total_seq_len $SEQ_LEN \
+    --proportional_sharding &
+
+# Rank 1 (Weak GPU)
+export RANK=1
+export LOCAL_RANK=1
+CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$WEAK_GPU_PERCENTAGE python3 "$SCRIPT_DIR/test_ring_prefill.py" \
+    --total_seq_len $SEQ_LEN \
+    --proportional_sharding &
+
+wait
+
+echo "====================================================="
+echo "PROPORTIONAL SHARDING benchmark finished"
+echo "====================================================="
+echo "All benchmarks completed."
