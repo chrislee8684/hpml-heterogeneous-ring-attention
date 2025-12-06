@@ -26,7 +26,7 @@ def main():
     proportional = args.proportional_sharding
 
     # ---------------------------------------------------------
-    # Initialize distributed environment
+    # Distributed initialization
     # ---------------------------------------------------------
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -44,7 +44,7 @@ def main():
     from fms.distributed.llama_ring import _compute_attention_ring_pass_kv
 
     # ---------------------------------------------------------
-    # Benchmark configuration
+    # Benchmark settings
     # ---------------------------------------------------------
     batch_size = 1
     nheads = 8
@@ -54,31 +54,28 @@ def main():
     causal = True
 
     # ---------------------------------------------------------
-    # SHARDING LOGIC
+    # SHARDING LOGIC — EVEN or PROPORTIONAL
     # ---------------------------------------------------------
     if proportional:
-        # -------------------------
+        # -----------------------
         # PROPORTIONAL SHARDING
-        # -------------------------
-        local_throttle = float(os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "100"))
+        # -----------------------
+        local_thr = float(os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "100"))
 
-        # Gather all throttles
-        throttle_tensor = torch.tensor([local_throttle], device=device, dtype=torch.float32)
-        throttle_list = [torch.zeros_like(throttle_tensor) for _ in range(world_size)]
-        dist.all_gather(throttle_list, throttle_tensor)
-        throttle_list = [t.item() for t in throttle_list]
+        thr_tensor = torch.tensor([local_thr], device=device, dtype=torch.float32)
+        thr_list = [torch.zeros_like(thr_tensor) for _ in range(world_size)]
+        dist.all_gather(thr_list, thr_tensor)
+        thr_list = [t.item() for t in thr_list]
 
         if rank == 0:
-            print(f"[calib] per-rank speeds: {throttle_list}")
+            print(f"[calib] per-rank speeds: {thr_list}")
 
-        total_thr = sum(throttle_list)
-        weights = [t / total_thr for t in throttle_list]
+        total_thr = sum(thr_list)
+        weights = [t / total_thr for t in thr_list]
 
-        # Compute shard sizes
         sizes = [int(total_seq_len * w) for w in weights]
-        sizes[-1] = total_seq_len - sum(sizes[:-1])  # fix rounding
+        sizes[-1] = total_seq_len - sum(sizes[:-1])  # rounding fix
 
-        # Start offsets
         starts = [0] * world_size
         for i in range(1, world_size):
             starts[i] = starts[i - 1] + sizes[i - 1]
@@ -86,17 +83,15 @@ def main():
         local_seq_len = sizes[rank]
         q_start = starts[rank]
 
-        if rank == 0:
-            print(f"[calib] block_lens={sizes}, block_starts={starts}")
+        block_lens = sizes
+        block_size = max(sizes)
 
-        block_size = max(sizes)  # needed for consistent ring padding
-
-        print(f"[rank{rank}] PROPORTIONAL shard start={q_start}, len={local_seq_len}")
+        print(f"[rank{rank}] PROPORTIONAL shard: start={q_start}, len={local_seq_len}")
 
     else:
-        # -------------------------
+        # -----------------------
         # EVEN SHARDING
-        # -------------------------
+        # -----------------------
         base = total_seq_len // world_size
         sizes = [base] * world_size
         sizes[-1] = total_seq_len - base * (world_size - 1)
@@ -105,18 +100,24 @@ def main():
         q_start = starts[rank]
         local_seq_len = sizes[rank]
 
+        block_lens = sizes
         block_size = base
 
-        print(f"[rank{rank}] EVEN shard start={q_start}, len={local_seq_len}")
+        print(f"[rank{rank}] EVEN shard: start={q_start}, len={local_seq_len}")
 
     # ---------------------------------------------------------
-    # Setup Ring Strategy
+    # Setup RingAttentionStrategy
+    # TRUE REQUIRED SIGNATURE:
+    #     RingAttentionStrategy(block_lens, block_size, group=None)
     # ---------------------------------------------------------
-    strategy = RingAttentionStrategy(group=None)
-    strategy.block_size = block_size  # ensures padding matches all ranks
+    strategy = RingAttentionStrategy(
+        block_lens=block_lens,
+        block_size=block_size,
+        group=None
+    )
 
     # ---------------------------------------------------------
-    # Allocate Q, K, V tensors for this rank
+    # Allocate Q/K/V tensors for this shard
     # ---------------------------------------------------------
     torch.manual_seed(42 + rank)
     q = torch.randn(batch_size, nheads, local_seq_len, head_dim,
@@ -130,7 +131,7 @@ def main():
         print(f"[rank0] Q/K/V shapes: {q.shape}")
 
     # ---------------------------------------------------------
-    # Correctness check
+    # One correctness run
     # ---------------------------------------------------------
     out = _compute_attention_ring_pass_kv(
         q, k, v, None,
@@ -143,7 +144,7 @@ def main():
     )
 
     if rank == 0:
-        print(f"[rank0] Initial output sum = {out.sum().item():.4f}")
+        print(f"[rank0] initial output sum = {out.sum().item():.4f}")
 
     torch.cuda.synchronize()
 
@@ -179,11 +180,11 @@ def main():
     # ---------------------------------------------------------
     if rank == 0:
         print("\n--- Benchmark Summary ---")
-        print(f"GPUs:               {world_size}")
-        print(f"Total seq_len:      {total_seq_len}")
-        print(f"Shard sizes:        {sizes}")
-        print(f"Sharding mode:      {'proportional' if proportional else 'even'}")
-        print(f"Avg time per call:  {elapsed_ms:.2f} ms")
+        print(f"GPUs:             {world_size}")
+        print(f"Total seq_len:    {total_seq_len}")
+        print(f"Shard sizes:      {sizes}")
+        print(f"Sharding mode:    {'proportional' if proportional else 'even'}")
+        print(f"Avg time / call:  {elapsed_ms:.2f} ms")
         print("--- End Summary ---\n")
 
     dist.destroy_process_group()
