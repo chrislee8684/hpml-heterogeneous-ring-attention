@@ -180,9 +180,16 @@ class RingShiftHandle:
 
 class RingAttentionStrategy(DistributedStrategy):
     def __init__(
-        self, block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
+        self,block_lens: List[int], block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
     ):
         super().__init__(from_meta)
+
+        self.block_lens = block_lens
+        self.block_starts = [0]
+        for L in block_lens[:-1]:
+            self.block_starts.append(self.block_starts[-1] + L)
+        self._local_valid_len = block_lens[self.rank]
+
         
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             self.group = group
@@ -200,6 +207,14 @@ class RingAttentionStrategy(DistributedStrategy):
         self._comm_time_ms: float = 0.0
         self._decode_step_counter = 0
         self._is_decode_phase = False
+    
+    @property
+    def local_q_start(self):
+        return self.block_starts[self.rank]
+
+    @property
+    def local_q_len(self):
+        return self.block_lens[self.rank]
 
     def start_decode_phase(self):
       self._is_decode_phase = True

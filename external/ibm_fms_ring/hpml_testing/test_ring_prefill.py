@@ -34,6 +34,8 @@ def main():
     from fms.distributed.strategy import RingAttentionStrategy
     from fms.distributed.llama_ring import _compute_attention_ring_pass_kv
 
+    slowdown_factor = float(os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "1.0"))
+
     # Test config
     batch_size = 1
     total_seq_len = args.total_seq_len
@@ -46,7 +48,7 @@ def main():
 
     # Setup strategy
     strategy = RingAttentionStrategy(group=None)
-    local_seq_len = total_seq_len // world_size
+    local_seq_len = total_seq_len * slowdown_factor // (1 + slowdown_factor)
     strategy.block_size = local_seq_len
 
     q_start = rank * local_seq_len
