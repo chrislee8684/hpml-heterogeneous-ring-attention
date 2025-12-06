@@ -194,9 +194,27 @@ class RingAttentionStrategy(DistributedStrategy):
             self.world_size = 1
             print("torch.distributed not initialized, defaulting to world_size=1, rank=0.")
 
-        self.block_size = block_size 
-        self._original_seq_len: Optional[int] = None
-        self._local_valid_len: Optional[int] = None
+
+        # Hetero block lengths
+        block_lens = list(block_lens)
+        assert len(block_lens) == self.world_size, (
+            f"len(block_lens)={len(block_lens)} vs world_size={self.world_size}"
+        )
+
+        self.block_lens = block_lens
+
+        # Prefix sums for global starts
+        self.block_starts = [0]
+        for i in range(self.world_size - 1):
+            self.block_starts.append(self.block_starts[-1] + self.block_lens[i])
+
+        # Local valid length
+        self._local_valid_len = self.block_lens[self.rank]
+
+        # CRITICAL: a common block_size for padding in ring_shift_start/_pad_to_block_size
+        # All ranks will pad up to this.
+        self.block_size = max(self.block_lens)
+        
         self._comm_time_ms: float = 0.0
         self._decode_step_counter = 0
         self._is_decode_phase = False
