@@ -11,7 +11,7 @@
 set -e
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.2-1B/snapshots/4e20de362430cd3b72f300e6b0f18e50e7166e08
 #"/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
-MODEL_PATH="/workspace/llama-hf"
+MODEL_PATH="/datasets/ai/llama3/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="benchmark_results"
 NUM_GPUS=2
