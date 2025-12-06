@@ -160,7 +160,7 @@ def _ring_attention_pass_kv(
           v = torch.empty((batch_size, nheads, 0, emb_v_per_head), device=x_norm.device, dtype=x_norm.dtype)
 
       scale = attn_module.scale_factor or math.sqrt(attn_module.emb_kq_per_head)
-      accum_dtype = torch.float32
+      accum_dtype = torch.float16
 
       # main ring attention with pass-KV
       out = _compute_attention_ring_pass_kv(
@@ -209,6 +209,36 @@ def _compute_qkv_and_rope(
         v = v.repeat_interleave(kv_to_q_head_ratio, dim=1)
     return q, k, v
 
+
+def _online_softmax_update(
+    attn_weights: Tensor,
+    v_block: Tensor,
+    numerator: Tensor,
+    denominator: Tensor,
+    prev_max_score: Tensor,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """
+    Online softmax update for a single block of attention.
+    """
+    # Find max in current block
+    block_max = attn_weights.max(dim=-1, keepdim=True).values
+
+    # Update global max
+    new_max_score = torch.maximum(prev_max_score, block_max)
+
+    # Correction factor for previous accumulations
+    correction = torch.exp(prev_max_score - new_max_score)
+
+    # Exp weights for current block (shifted by new max)
+    exp_weights = torch.exp(attn_weights - new_max_score)
+
+    # Update numerator and denominator with correction
+    numerator = (numerator * correction) + torch.matmul(exp_weights, v_block)
+    denominator = (denominator * correction) + exp_weights.sum(dim=-1, keepdim=True)
+
+    return numerator, denominator, new_max_score
+
+
 #rewriting to use online softmax and use single approach (use online softmax and calculate max iteratively)
 #now with async communication-computation overlap
 def _compute_attention_ring_pass_kv(
@@ -223,93 +253,102 @@ def _compute_attention_ring_pass_kv(
     accum_dtype: torch.dtype,
     causal: bool,
 ) -> Tensor:
-
-    # computing ring attention in one pass using online softmax
+    """
+    Ring attention computation using online softmax with async communication overlap.
+    """
     batch_size, nheads, _, _ = q.shape
     emb_v = v.shape[-1]
 
-    #initialize accumulator for num and denom
+    # Initialize online softmax accumulators
     numerator = torch.zeros((batch_size, nheads, num_valid_tokens, emb_v), device=q.device, dtype=accum_dtype)
     denominator = torch.zeros((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
+    max_score = torch.full((batch_size, nheads, num_valid_tokens, 1), float("-inf"), device=q.device, dtype=accum_dtype)
 
-    #max score
-    prev_max_score = torch.full((batch_size, nheads, num_valid_tokens, 1), float("-inf"), device=q.device, dtype=accum_dtype)
-
-    #cast to float32
-    q_fp32 = q.to(accum_dtype)
+    # Cast tensors to accumulator dtype
+    q_cast = q.to(accum_dtype)
     current_k = k.to(accum_dtype)
     current_v = v.to(accum_dtype)
 
-    #getting global query indices
+    # Global query indices for causal masking
     query_global_indices = torch.arange(q_start, q_start + num_valid_tokens, device=q.device)
 
-    # track current K/V length
+    # Track current KV block length
     current_k_len = current_k.shape[2]
 
-    # async handles for K and V
-    k_handle = None
-    v_handle = None
+    # Async handles for next iteration's KV
+    next_k_handle = None
+    next_v_handle = None
 
-    #main ring loop with async overlap
+    # Main ring loop with async communication-computation overlap
     for i in range(strategy.world_size):
+        print(f"[RING DEBUG rank={strategy.rank}] === iteration {i}/{strategy.world_size} ===", flush=True)
 
-        # wait for previous async transfer 
-        if i > 0 and k_handle is not None and v_handle is not None:
-            current_k, current_k_len = strategy.ring_shift_wait(k_handle)
-            current_v, _ = strategy.ring_shift_wait(v_handle)
-            # cast to accum dtype after receiving
-            current_k = current_k.to(accum_dtype)
-            current_v = current_v.to(accum_dtype)
-
-        # start async transfer for next iteration
+        # STEP 1: Start async communication for NEXT iteration BEFORE compute
+        # This allows NCCL to transfer data while we compute on current block
         if i < strategy.world_size - 1:
-            k_handle = strategy.ring_shift_start(current_k, current_k_len, is_decode_step=False)
-            v_handle = strategy.ring_shift_start(current_v, current_k_len, is_decode_step=False)
+            import time as time_module
+            comm_start = time_module.perf_counter()
+            print(f"[RING DEBUG rank={strategy.rank}] starting async KV shift for next iteration", flush=True)
+            next_k_handle, next_v_handle = strategy.ring_shift_kv_start(
+                current_k, current_v, current_k_len, is_decode_step=False
+            )
+            comm_init_time = (time_module.perf_counter() - comm_start) * 1000
+            print(f"[RING DEBUG rank={strategy.rank}] async comm initiated in {comm_init_time:.2f}ms, now computing...", flush=True)
 
-        # compute attention for current block (overlapped with transfer)
-        # finding original location of kv cache
+        # STEP 2: Compute attention for CURRENT block (overlaps with communication)
         source_rank = (strategy.rank - i) % strategy.world_size
-        block_offset_for_source_rank = source_rank * strategy.block_size
+        block_offset = source_rank * strategy.block_size
+
+        import time as time_module
+        compute_start = time_module.perf_counter()
 
         if num_valid_tokens > 0 and current_k_len > 0:
-            #getting global indices of key
+            # Global indices for current KV block
             key_block_global_indices = torch.arange(
-                block_offset_for_source_rank,
-                block_offset_for_source_rank + current_k_len,
-                device=q.device
+                block_offset, block_offset + current_k_len, device=q.device
             )
-            #slicing mask
+
+            # Slice mask for current block
             current_mask_slice = None
             if mask is not None:
                 current_mask_slice = mask[...,
                     q_start : q_start + num_valid_tokens,
-                    block_offset_for_source_rank : block_offset_for_source_rank + current_k_len
+                    block_offset : block_offset + current_k_len
                 ]
-            #calculate attention score
+
+            # Compute attention scores
             attn_weights = _attn_scores(
-                q_fp32, current_k, query_global_indices, key_block_global_indices, scale, current_mask_slice, causal
+                q_cast, current_k, query_global_indices, key_block_global_indices,
+                scale, current_mask_slice, causal
             )
 
-            #online softmax implementation
-            #first find max in block
-            block_max = attn_weights.max(dim=-1, keepdim=True).values
-            #now update max
-            new_max_score = torch.maximum(prev_max_score, block_max)
+            # Update accumulators using online softmax
+            numerator, denominator, max_score = _online_softmax_update(
+                attn_weights, current_v, numerator, denominator, max_score
+            )
 
-            #now calculate correction factor
-            correction = torch.exp(prev_max_score-new_max_score)
-            #find exponentials for current block, add to previous which is found through recurrence relation
-            exp_weights = torch.exp(attn_weights - new_max_score)
-            #update numerator and denominator
-            numerator = (numerator*correction) + torch.matmul(exp_weights, current_v)
-            denominator = (denominator*correction) + exp_weights.sum(dim=-1, keepdim=True)
+        compute_time = (time_module.perf_counter() - compute_start) * 1000
+        print(f"[RING DEBUG rank={strategy.rank}] compute done in {compute_time:.2f}ms", flush=True)
 
-            #update state for next iteration
-            prev_max_score = new_max_score
+        # STEP 3: Wait for async communication to complete (should already be done if compute took longer)
+        if i < strategy.world_size - 1:
+            wait_start = time_module.perf_counter()
+            print(f"[RING DEBUG rank={strategy.rank}] waiting for async KV transfer...", flush=True)
+            next_k, next_k_len = strategy.ring_shift_wait(next_k_handle)
+            next_v, _ = strategy.ring_shift_wait(next_v_handle)
+            wait_time = (time_module.perf_counter() - wait_start) * 1000
+            print(f"[RING DEBUG rank={strategy.rank}] async wait took {wait_time:.2f}ms (ideally ~0 if overlapped), next_k_len={next_k_len}", flush=True)
 
+            # Prepare for next iteration
+            current_k = next_k.to(accum_dtype)
+            current_v = next_v.to(accum_dtype)
+            current_k_len = next_k_len
+
+    # Handle empty case
     if num_valid_tokens == 0:
-        return torch.empty((q.shape[0], q.shape[1], 0, v.shape[-1]),
-                            device=q.device, dtype=q.dtype)
+        return torch.empty((q.shape[0], q.shape[1], 0, v.shape[-1]), device=q.device, dtype=q.dtype)
+
+    # Final normalization
     out = numerator / (denominator + torch.finfo(accum_dtype).eps)
     return out.to(q.dtype)
 

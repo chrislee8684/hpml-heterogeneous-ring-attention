@@ -183,7 +183,7 @@ class RingAttentionStrategy(DistributedStrategy):
         self, block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
     ):
         super().__init__(from_meta)
-        
+
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             self.group = group
             self.rank = torch.distributed.get_rank(group=self.group)
@@ -194,7 +194,7 @@ class RingAttentionStrategy(DistributedStrategy):
             self.world_size = 1
             print("torch.distributed not initialized, defaulting to world_size=1, rank=0.")
 
-        self.block_size = block_size 
+        self.block_size = block_size
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
         self._comm_time_ms: float = 0.0
@@ -202,8 +202,8 @@ class RingAttentionStrategy(DistributedStrategy):
         self._is_decode_phase = False
 
     def start_decode_phase(self):
-      self._is_decode_phase = True
-      self._decode_step_counter = 0
+        self._is_decode_phase = True
+        self._decode_step_counter = 0
 
     def get_decode_q_owner(self) -> int:
         """Returns which GPU should compute Q for this decode step"""
@@ -262,90 +262,117 @@ class RingAttentionStrategy(DistributedStrategy):
         shp[1] = 0
         return torch.empty(*shp, dtype=x.dtype, device=x.device)
     
-    def ring_shift_start(
+    def ring_shift_kv_start(
         self,
-        tensor: torch.Tensor,
+        k_tensor: torch.Tensor,
+        v_tensor: torch.Tensor,
         valid_seq_len: int,
-        is_decode_step: bool = False
-    ) -> RingShiftHandle:
-
+        is_decode_step: bool = False,
+    ) -> Tuple[RingShiftHandle, RingShiftHandle]:
+        """
+        Combined K and V ring shift using async isend/irecv.
+        NCCL internally uses its own stream, allowing overlap with compute on default stream.
+        Returns tuple of (k_handle, v_handle).
+        """
         send_to = (self.rank + 1) % self.world_size
         recv_from = (self.rank - 1 + self.world_size) % self.world_size
         seq_dim = 2
 
-        #single gpu
+        # Single GPU: trivial
         if self.world_size == 1:
-            return RingShiftHandle(
-                requests=None, 
-                recv_tensor=tensor, 
-                recv_length=None, 
-                start_time=time.perf_counter(), 
-                is_decode=is_decode_step, 
-                valid_len_if_sync=valid_seq_len
-            )
-        
+            now = time.perf_counter()
+            k_handle = RingShiftHandle(None, k_tensor, None, now, is_decode_step, valid_seq_len)
+            v_handle = RingShiftHandle(None, v_tensor, None, now, is_decode_step, valid_seq_len)
+            return k_handle, v_handle
+
         t0 = time.perf_counter()
-        
-        # decode step
+
+        # Decode: K/V are already the right length
         if is_decode_step:
-            send_buf = tensor.contiguous()
-            recv_buf = torch.empty_like(send_buf)
+            send_k = k_tensor.contiguous()
+            send_v = v_tensor.contiguous()
+            recv_k = torch.empty_like(send_k)
+            recv_v = torch.empty_like(send_v)
+
+            # Batch all P2P ops together to avoid NCCL deadlock
             ops = [
-                P2POp(dist.isend, send_buf, peer=send_to),
-                P2POp(dist.irecv, recv_buf, peer=recv_from)
+                P2POp(dist.isend, send_k, send_to),
+                P2POp(dist.irecv, recv_k, recv_from),
+                P2POp(dist.isend, send_v, send_to),
+                P2POp(dist.irecv, recv_v, recv_from),
             ]
             reqs = dist.batch_isend_irecv(ops)
-            return RingShiftHandle(reqs, recv_buf, None, t0, is_decode=True, valid_len_if_sync=valid_seq_len)
 
-        # prefill
+            print(f"[COMM DEBUG rank={self.rank}] decode: initiated batch_isend_irecv with {len(ops)} ops", flush=True)
+
+            k_handle = RingShiftHandle(reqs, recv_k, None, t0, True, valid_seq_len)
+            v_handle = RingShiftHandle(reqs, recv_v, None, t0, True, valid_seq_len)
+            return k_handle, v_handle
+
+        # Prefill: slice + pad
         if valid_seq_len == 0:
-            empty_shape = list(tensor.shape)
+            empty_shape = list(k_tensor.shape)
             empty_shape[seq_dim] = 0
-            to_send = torch.empty(*empty_shape, dtype=tensor.dtype, device=tensor.device)
+            to_send_k = torch.empty(*empty_shape, dtype=k_tensor.dtype, device=k_tensor.device)
+            to_send_v = torch.empty(*empty_shape, dtype=v_tensor.dtype, device=v_tensor.device)
         else:
-            idx = [slice(None)] * tensor.ndim
+            idx = [slice(None)] * k_tensor.ndim
             idx[seq_dim] = slice(0, valid_seq_len)
-            to_send = tensor[tuple(idx)]
+            to_send_k = k_tensor[tuple(idx)]
+            to_send_v = v_tensor[tuple(idx)]
 
-        # prepare buffers for padded data and length
-        padded_send = self._pad_to_block_size(to_send, dim=seq_dim).contiguous()
-        recv_buf = torch.empty_like(padded_send)
-        recv_len = torch.empty(1, dtype=torch.int32, device=tensor.device)
-        send_len = torch.tensor([valid_seq_len], dtype=torch.int32, device=tensor.device)
+        padded_k = self._pad_to_block_size(to_send_k, dim=seq_dim).contiguous()
+        padded_v = self._pad_to_block_size(to_send_v, dim=seq_dim).contiguous()
+        recv_k = torch.empty_like(padded_k)
+        recv_v = torch.empty_like(padded_v)
 
+        send_len = torch.tensor([valid_seq_len], dtype=torch.int32, device=k_tensor.device)
+        recv_len = torch.empty(1, dtype=torch.int32, device=k_tensor.device)
+
+        # Batch all P2P ops together to avoid NCCL deadlock
+        # Using batch_isend_irecv ensures all ops are submitted atomically
         ops = [
-            P2POp(dist.isend, send_len, peer=send_to),
-            P2POp(dist.irecv, recv_len, peer=recv_from),
-            P2POp(dist.isend, padded_send, peer=send_to),
-            P2POp(dist.irecv, recv_buf, peer=recv_from)
+            P2POp(dist.isend, send_len, send_to),
+            P2POp(dist.irecv, recv_len, recv_from),
+            P2POp(dist.isend, padded_k, send_to),
+            P2POp(dist.irecv, recv_k, recv_from),
+            P2POp(dist.isend, padded_v, send_to),
+            P2POp(dist.irecv, recv_v, recv_from),
         ]
-        
         reqs = dist.batch_isend_irecv(ops)
-        return RingShiftHandle(reqs, recv_buf, recv_len, t0, is_decode=False)
+
+        print(f"[COMM DEBUG rank={self.rank}] initiated batch_isend_irecv with {len(ops)} ops, valid_seq_len={valid_seq_len}", flush=True)
+
+        # Both handles share the same requests - waiting on either completes all ops
+        # K and V always have the same length (recv_len applies to both)
+        k_handle = RingShiftHandle(reqs, recv_k, recv_len, t0, False)
+        v_handle = RingShiftHandle(reqs, recv_v, recv_len, t0, False)
+        return k_handle, v_handle
 
     def ring_shift_wait(self, handle: RingShiftHandle) -> Tuple[torch.Tensor, int]:
         """
-        Waits for the async ring shift to complete
+        Waits for the async ring shift to complete.
+        req.wait() blocks until NCCL P2P ops finish.
         """
         if handle.requests is None:
             tensor = handle.recv_tensor
             valid_len = handle.valid_len_if_sync
-            
+
             if valid_len == 0:
                 empty_shape = list(tensor.shape)
                 empty_shape[2] = 0
                 return torch.empty(*empty_shape, dtype=tensor.dtype, device=tensor.device), 0
-                
+
             if handle.is_decode:
                 # return tensor as-is
                 return tensor.clone(), valid_len
 
-            # prefill path 
+            # prefill path
             idx = [slice(None)] * tensor.ndim
             idx[2] = slice(0, valid_len)
             return tensor[tuple(idx)].clone(), valid_len
 
-        #now, multi gpu
+        # Multi-GPU: wait for all P2P requests to complete
         for req in handle.requests:
             req.wait()
 
@@ -356,7 +383,7 @@ class RingAttentionStrategy(DistributedStrategy):
 
         # prefill path
         self._comm_time_ms += (time.perf_counter() - handle.start_time) * 1000
-        
+
         new_len = handle.recv_length.item()
         seq_dim = 2
         idx2 = [slice(None)] * handle.recv_tensor.ndim
