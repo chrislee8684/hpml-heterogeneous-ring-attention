@@ -180,7 +180,7 @@ class RingShiftHandle:
 
 class RingAttentionStrategy(DistributedStrategy):
     def __init__(
-        self, block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
+        self,block_lens: List[int], block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
     ):
         super().__init__(from_meta)
         

@@ -131,8 +131,13 @@ def _ring_attention_pass_kv(
       KV tensors rotate around the ring while Q stays local.
       """
       batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
-      assert num_valid_tokens_input_shard == valid_len
-      current_rank_token_global_start_idx = strategy.rank * strategy.block_size
+    #   assert num_valid_tokens_input_shard == valid_len
+    #   current_rank_token_global_start_idx = strategy.rank * strategy.block_size
+
+      # in hetero:
+      assert num_valid_tokens_input_shard == strategy.local_q_len
+      current_rank_token_global_start_idx = strategy.local_q_start
+      valid_len = strategy.local_q_len
 
       # slice to valid length to be safe
       current_rank_input_slice = x_norm[:, :valid_len]
@@ -269,7 +274,14 @@ def _compute_attention_ring_pass_kv(
         # compute attention for current block (overlapped with transfer)
         # finding original location of kv cache
         source_rank = (strategy.rank - i) % strategy.world_size
-        block_offset_for_source_rank = source_rank * strategy.block_size
+        # block_offset_for_source_rank = source_rank * strategy.block_size
+        block_offset_for_source_rank = strategy.block_starts[source_rank]
+        expected_len   = strategy.block_lens[source_rank]
+        assert current_k_len == expected_len, (
+            f"Mismatch: current_k_len={current_k_len}, "
+            f"strategy.block_lens[{source_rank}]={expected_len}"
+        )
+
 
         if num_valid_tokens > 0 and current_k_len > 0:
             #getting global indices of key
