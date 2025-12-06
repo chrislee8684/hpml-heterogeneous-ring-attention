@@ -1,0 +1,114 @@
+Ring Attention Benchmark - Thu Nov 27 12:37:58 AM UTC 2025
+Running: 256 tokens
+W1127 00:38:09.244000 154458 site-packages/torch/distributed/run.py:803] 
+W1127 00:38:09.244000 154458 site-packages/torch/distributed/run.py:803] *****************************************
+W1127 00:38:09.244000 154458 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1127 00:38:09.244000 154458 site-packages/torch/distributed/run.py:803] *****************************************
+Benchmark: 256 prompt tokens, 30 decode tokens
+using RingAttentionStrategy
+using RingAttentionStrategy
+
+Ring:
+  TTFT: 3645.87 ms | Avg Decode: 1074.97 ms | Total: 35894.86 ms | Comm: 22774.79 ms | Compute/Comm: 0.58
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+Regular:
+  TTFT: 119.52 ms | Avg Decode: 53.60 ms | Total: 1727.65 ms
+
+Strategy   Tokens   TTFT       Avg Decode   Total      Comm       Comp/Comm 
+----------------------------------------------------------------------
+Ring       256      3645.87    1074.97      35894.86   22774.79   0.58      
+Regular    256      119.52     53.60        1727.65    0.00       N/A       
+Running: 512 tokens
+W1127 00:39:38.344000 154568 site-packages/torch/distributed/run.py:803] 
+W1127 00:39:38.344000 154568 site-packages/torch/distributed/run.py:803] *****************************************
+W1127 00:39:38.344000 154568 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1127 00:39:38.344000 154568 site-packages/torch/distributed/run.py:803] *****************************************
+Benchmark: 512 prompt tokens, 30 decode tokens
+using RingAttentionStrategyusing RingAttentionStrategy
+
+
+Ring:
+  TTFT: 4446.03 ms | Avg Decode: 1081.77 ms | Total: 36899.03 ms | Comm: 25169.25 ms | Compute/Comm: 0.47
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+Regular:
+  TTFT: 70.54 ms | Avg Decode: 52.85 ms | Total: 1655.94 ms
+
+Strategy   Tokens   TTFT       Avg Decode   Total      Comm       Comp/Comm 
+----------------------------------------------------------------------
+Ring       512      4446.03    1081.77      36899.03   25169.25   0.47      
+Regular    512      70.54      52.85        1655.94    0.00       N/A       
+Running: 1024 tokens
+W1127 00:40:41.976000 157347 site-packages/torch/distributed/run.py:803] 
+W1127 00:40:41.976000 157347 site-packages/torch/distributed/run.py:803] *****************************************
+W1127 00:40:41.976000 157347 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1127 00:40:41.976000 157347 site-packages/torch/distributed/run.py:803] *****************************************
+using RingAttentionStrategyBenchmark: 1024 prompt tokens, 30 decode tokens
+using RingAttentionStrategy
+
+
+Ring:
+  TTFT: 5032.46 ms | Avg Decode: 1080.43 ms | Total: 37445.49 ms | Comm: 25297.37 ms | Compute/Comm: 0.48
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+Regular:
+  TTFT: 110.49 ms | Avg Decode: 52.09 ms | Total: 1673.10 ms
+
+Strategy   Tokens   TTFT       Avg Decode   Total      Comm       Comp/Comm 
+----------------------------------------------------------------------
+Ring       1024     5032.46    1080.43      37445.49   25297.37   0.48      
+Regular    1024     110.49     52.09        1673.10    0.00       N/A       
+Running: 4096 tokens
+W1127 00:41:45.316000 157435 site-packages/torch/distributed/run.py:803] 
+W1127 00:41:45.316000 157435 site-packages/torch/distributed/run.py:803] *****************************************
+W1127 00:41:45.316000 157435 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1127 00:41:45.316000 157435 site-packages/torch/distributed/run.py:803] *****************************************
+Benchmark: 4096 prompt tokens, 30 decode tokensusing RingAttentionStrategy
+using RingAttentionStrategy
+
+
+Ring:
+  TTFT: 6573.71 ms | Avg Decode: 1084.96 ms | Total: 39122.60 ms | Comm: 25337.82 ms | Compute/Comm: 0.54
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+Regular:
+  TTFT: 388.61 ms | Avg Decode: 50.43 ms | Total: 1901.60 ms
+
+Strategy   Tokens   TTFT       Avg Decode   Total      Comm       Comp/Comm 
+----------------------------------------------------------------------
+Ring       4096     6573.71    1084.96      39122.60   25337.82   0.54      
+Regular    4096     388.61     50.43        1901.60    0.00       N/A       
+Running: 8192 tokens
+W1127 00:42:51.183000 157509 site-packages/torch/distributed/run.py:803] 
+W1127 00:42:51.183000 157509 site-packages/torch/distributed/run.py:803] *****************************************
+W1127 00:42:51.183000 157509 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1127 00:42:51.183000 157509 site-packages/torch/distributed/run.py:803] *****************************************
+Benchmark: 8192 prompt tokens, 30 decode tokens
+using RingAttentionStrategy
+using RingAttentionStrategy
+
+Ring:
+  TTFT: 11222.37 ms | Avg Decode: 1086.79 ms | Total: 43826.20 ms | Comm: 24849.21 ms | Compute/Comm: 0.76
+/work/pi_jaimedavila_umass_edu/asadhgauri_umass_edu/.conda/envs/context_parallelism/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+
+Regular:
+  TTFT: 774.42 ms | Avg Decode: 54.22 ms | Total: 2401.02 ms
+
+Strategy   Tokens   TTFT       Avg Decode   Total      Comm       Comp/Comm 
+----------------------------------------------------------------------
+Ring       8192     11222.37   1086.79      43826.20   24849.21   0.76      
+Regular    8192     774.42     54.22        2401.02    0.00       N/A       
+Running: 16384 tokens
+W1127 00:44:02.734000 157606 site-packages/torch/distributed/run.py:803] 
+W1127 00:44:02.734000 157606 site-packages/torch/distributed/run.py:803] *****************************************
+W1127 00:44:02.734000 157606 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1127 00:44:02.734000 157606 site-packages/torch/distributed/run.py:803] *****************************************
+Benchmark: 16384 prompt tokens, 30 decode tokensusing RingAttentionStrategy
+
+using RingAttentionStrategy

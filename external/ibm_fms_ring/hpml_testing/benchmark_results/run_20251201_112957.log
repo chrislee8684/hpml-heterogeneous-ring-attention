@@ -1,0 +1,19 @@
+Ring Attention Benchmark - Mon Dec  1 11:29:57 AM EST 2025
+Running: 256 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 512 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 1024 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 4096 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 8192 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 16384 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 32768 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+Running: 65536 tokens
+./run_all_benchmarks.sh: line 30: torchrun: command not found
+
+Results saved to: benchmark_results/summary_20251201_112957.csv

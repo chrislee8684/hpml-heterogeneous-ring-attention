@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fms import models
 from fms.utils import tokenizers
-from fms.distributed.strategy import NoOpStrategy
+from fms.distributed.strategy import NoOpStrategy, RingAttentionStrategy
 
 SUMMARY_HEADERS = ["strategy", "prompt_tokens", "ttft_ms", "avg_decode_ms", "total_time_ms", "comm_time_ms", "compute_comm_ratio"]
 
@@ -71,8 +71,6 @@ def setup_model(args, strategy, dtype):
 
 def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
     """Run generation benchmark. Returns dict with timing metrics."""
-    from fms.distributed.strategy import RingAttentionStrategy
-
     rank = dist.get_rank() if dist.is_initialized() else 0
     ids = input_ids.clone().to(device)
 
@@ -108,7 +106,7 @@ def run_benchmark(model, input_ids, num_decode, label, device, is_ring=False):
         logits, cache = (out[0], out[1]) if isinstance(out, tuple) else (out.logits, out.past_key_value_states)
         last_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
 
-    avg_decode_ms = statistics.mean(decode_times)
+    avg_decode_ms = statistics.mean(decode_times) if decode_times else 0.0
     total_time_ms = ttft_ms + sum(decode_times)
 
     # Get comm time and compute ratio (ring only)

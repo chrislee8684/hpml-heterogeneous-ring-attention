@@ -11,3 +11,5 @@ fms.egg-info
 .ruff_cache
 .mypy_cache
 ibm_fms.egg-info
+slurm-*
+benchmark_results/run*

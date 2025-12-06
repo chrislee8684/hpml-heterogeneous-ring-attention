@@ -1,8 +1,10 @@
 import os
 from abc import abstractmethod
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
+import time
 
 import torch
+import math
 from torch import Tensor, nn
 import torch.distributed
 import torch.distributed as dist # Keep this for P2POp if not already imported
@@ -162,15 +164,26 @@ class TensorParallelStrategy(DistributedStrategy):
     def _distribute_layer(self, block: nn.Module, layer: int) -> nn.Module:
         return tp_wrapping.apply_tp(block, self.group)
 
+class RingShiftHandle:
+    __slots__ = ['requests', 'recv_tensor', 'recv_length', 'start_time', 'is_decode', 'valid_len_if_sync']
+    
+    def __init__(self, requests: Any, recv_tensor: torch.Tensor, recv_length: Any, start_time: float, is_decode: bool, valid_len_if_sync: Optional[int] = None):
+        self.requests = requests
+        self.recv_tensor = recv_tensor
+        # recv_length is a torch.Tensor in async mode, or None in decode/sync mode
+        self.recv_length = recv_length
+        self.start_time = start_time
+        self.is_decode = is_decode
+        # tensor's valid length for single device 
+        self.valid_len_if_sync = valid_len_if_sync
+
+
 class RingAttentionStrategy(DistributedStrategy):
     def __init__(
-        self,
-        block_size: int = 8192,
-        group: Optional[dist.ProcessGroup] = None,
-        from_meta: bool = False
+        self, block_size: Optional[int] = None, group: Optional[dist.ProcessGroup] = None, from_meta: bool = False
     ):
         super().__init__(from_meta)
-        self.block_size = block_size
+        
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             self.group = group
             self.rank = torch.distributed.get_rank(group=self.group)
@@ -179,15 +192,26 @@ class RingAttentionStrategy(DistributedStrategy):
             self.group = None
             self.rank = 0
             self.world_size = 1
-            print(
-                "[INFO] RingAttentionStrategy: torch.distributed not initialized,"
-                " defaulting to world_size=1, rank=0."
-            )
+            print("torch.distributed not initialized, defaulting to world_size=1, rank=0.")
+
+        self.block_size = block_size 
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
-        # HPML: Communication timing instrumentation
         self._comm_time_ms: float = 0.0
+        self._decode_step_counter = 0
+        self._is_decode_phase = False
 
+    def start_decode_phase(self):
+      self._is_decode_phase = True
+      self._decode_step_counter = 0
+
+    def get_decode_q_owner(self) -> int:
+        """Returns which GPU should compute Q for this decode step"""
+        return self._decode_step_counter % self.world_size
+
+    def increment_decode_step(self):
+        self._decode_step_counter += 1
+        
     def reset_comm_time(self):
         """HPML: Reset communication time counter."""
         self._comm_time_ms = 0.0
@@ -226,6 +250,9 @@ class RingAttentionStrategy(DistributedStrategy):
         if self.world_size == 1:
             self._local_valid_len = seq_len
             return x
+        
+        if self.block_size is None or seq_len > self.block_size:
+            self.block_size = math.ceil(seq_len / self.world_size)
         start = self.rank * self.block_size
         end = min(start + self.block_size, seq_len)
         self._local_valid_len = max(0, end - start)
@@ -234,25 +261,43 @@ class RingAttentionStrategy(DistributedStrategy):
         shp = list(x.shape)
         shp[1] = 0
         return torch.empty(*shp, dtype=x.dtype, device=x.device)
-
-    def _ring_shift_tensor(
+    
+    def ring_shift_start(
         self,
         tensor: torch.Tensor,
-        valid_seq_len: int
-    ) -> Tuple[torch.Tensor, int]:
-        if self.world_size == 1:
-            if valid_seq_len == 0:
-                empty_shape = list(tensor.shape)
-                empty_shape[2] = 0
-                return torch.empty(*empty_shape, dtype=tensor.dtype, device=tensor.device), 0
-            idx = [slice(None)] * tensor.ndim
-            idx[2] = slice(0, valid_seq_len)
-            return tensor[tuple(idx)].clone(), valid_seq_len
+        valid_seq_len: int,
+        is_decode_step: bool = False
+    ) -> RingShiftHandle:
 
         send_to = (self.rank + 1) % self.world_size
         recv_from = (self.rank - 1 + self.world_size) % self.world_size
         seq_dim = 2
 
+        #single gpu
+        if self.world_size == 1:
+            return RingShiftHandle(
+                requests=None, 
+                recv_tensor=tensor, 
+                recv_length=None, 
+                start_time=time.perf_counter(), 
+                is_decode=is_decode_step, 
+                valid_len_if_sync=valid_seq_len
+            )
+        
+        t0 = time.perf_counter()
+        
+        # decode step
+        if is_decode_step:
+            send_buf = tensor.contiguous()
+            recv_buf = torch.empty_like(send_buf)
+            ops = [
+                P2POp(dist.isend, send_buf, peer=send_to),
+                P2POp(dist.irecv, recv_buf, peer=recv_from)
+            ]
+            reqs = dist.batch_isend_irecv(ops)
+            return RingShiftHandle(reqs, recv_buf, None, t0, is_decode=True, valid_len_if_sync=valid_seq_len)
+
+        # prefill
         if valid_seq_len == 0:
             empty_shape = list(tensor.shape)
             empty_shape[seq_dim] = 0
@@ -262,35 +307,62 @@ class RingAttentionStrategy(DistributedStrategy):
             idx[seq_dim] = slice(0, valid_seq_len)
             to_send = tensor[tuple(idx)]
 
-        padded = self._pad_to_block_size(to_send, dim=seq_dim).contiguous()
-        recv_buf = torch.empty_like(padded)
+        # prepare buffers for padded data and length
+        padded_send = self._pad_to_block_size(to_send, dim=seq_dim).contiguous()
+        recv_buf = torch.empty_like(padded_send)
         recv_len = torch.empty(1, dtype=torch.int32, device=tensor.device)
         send_len = torch.tensor([valid_seq_len], dtype=torch.int32, device=tensor.device)
 
         ops = [
             P2POp(dist.isend, send_len, peer=send_to),
             P2POp(dist.irecv, recv_len, peer=recv_from),
-            P2POp(dist.isend, padded, peer=send_to),
+            P2POp(dist.isend, padded_send, peer=send_to),
             P2POp(dist.irecv, recv_buf, peer=recv_from)
         ]
-        # HPML: Time communication
-        import time as _time
-        if tensor.device.type == "cuda":
-            torch.cuda.synchronize()
-        _t0 = _time.perf_counter()
+        
         reqs = dist.batch_isend_irecv(ops)
-        for req in reqs:
+        return RingShiftHandle(reqs, recv_buf, recv_len, t0, is_decode=False)
+
+    def ring_shift_wait(self, handle: RingShiftHandle) -> Tuple[torch.Tensor, int]:
+        """
+        Waits for the async ring shift to complete
+        """
+        if handle.requests is None:
+            tensor = handle.recv_tensor
+            valid_len = handle.valid_len_if_sync
+            
+            if valid_len == 0:
+                empty_shape = list(tensor.shape)
+                empty_shape[2] = 0
+                return torch.empty(*empty_shape, dtype=tensor.dtype, device=tensor.device), 0
+                
+            if handle.is_decode:
+                # return tensor as-is
+                return tensor.clone(), valid_len
+
+            # prefill path 
+            idx = [slice(None)] * tensor.ndim
+            idx[2] = slice(0, valid_len)
+            return tensor[tuple(idx)].clone(), valid_len
+
+        #now, multi gpu
+        for req in handle.requests:
             req.wait()
-        if tensor.device.type == "cuda":
-            torch.cuda.synchronize()
-        self._comm_time_ms += (_time.perf_counter() - _t0) * 1000
 
-        new_len = recv_len.item()
-        assert 0 <= new_len <= self.block_size
-        idx2 = [slice(None)] * recv_buf.ndim
+        # decode path
+        if handle.is_decode:
+            # decode tensors are already the correct size
+            return handle.recv_tensor.contiguous(), handle.valid_len_if_sync
+
+        # prefill path
+        self._comm_time_ms += (time.perf_counter() - handle.start_time) * 1000
+        
+        new_len = handle.recv_length.item()
+        seq_dim = 2
+        idx2 = [slice(None)] * handle.recv_tensor.ndim
         idx2[seq_dim] = slice(0, new_len)
-        return recv_buf[tuple(idx2)].contiguous(), new_len
-
+        return handle.recv_tensor[tuple(idx2)].contiguous(), new_len
+   
     def get_local_valid_len(self) -> int:
         assert self._local_valid_len is not None
         return self._local_valid_len
