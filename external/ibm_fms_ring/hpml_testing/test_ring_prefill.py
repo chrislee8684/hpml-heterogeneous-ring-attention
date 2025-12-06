@@ -1,50 +1,97 @@
 """
-Test for ring attention prefill (pass-KV) with async overlap.
-
-This script is benchmarked by a launcher script that sets up the distributed
-environment and throttling.
-
-Run via a launcher script like `run_manual_benchmark.sh`.
+Ring Attention Benchmark
+Q is sharded proportionally, KV is sharded evenly.
 """
 import os
 import torch
 import torch.distributed as dist
 import argparse
 import time
-import math
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Ring Attention Benchmark")
-    parser.add_argument("--total_seq_len", type=int, default=16384,
-                        help="Total sequence length to distribute across GPUs.")
-    parser.add_argument("--proportional_sharding", action="store_true",
-                        help="If set, distribute sequence proportionally to GPU throttle; else evenly.")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--total_seq_len", type=int, default=16384)
+    parser.add_argument("--proportional_sharding", action="store_true")
     args = parser.parse_args()
+
     total_seq_len = args.total_seq_len
     proportional = args.proportional_sharding
 
     # ---------------------------------------------------------
-    # Distributed initialization
+    # Distributed init
     # ---------------------------------------------------------
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
 
-    throttle_env = os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "100")
-    print(f"[rank{rank}] throttle={throttle_env}%")
-
-    # Import AFTER distributed init
+    # Import AFTER dist init
     from fms.distributed.strategy import RingAttentionStrategy
     from fms.distributed.llama_ring import _compute_attention_ring_pass_kv
 
     # ---------------------------------------------------------
-    # Benchmark settings
+    # Load MPS throttling for Q proportionality
+    # ---------------------------------------------------------
+    throttle = float(os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "100"))
+
+    # ---------------------------------------------------------
+    # Compute KV EVEN shards
+    # ---------------------------------------------------------
+    kv_base = total_seq_len // world_size
+    kv_sizes = [kv_base] * world_size
+    kv_sizes[-1] = total_seq_len - kv_base * (world_size - 1)
+
+    kv_starts = [0] * world_size
+    for i in range(1, world_size):
+        kv_starts[i] = kv_starts[i - 1] + kv_sizes[i - 1]
+
+    kv_local_len = kv_sizes[rank]
+    kv_start = kv_starts[rank]
+
+    # ---------------------------------------------------------
+    # Compute Q PROPORTIONAL shards (optional)
+    # ---------------------------------------------------------
+    if proportional:
+        thr_tensor = torch.tensor([throttle], device=device)
+        thr_list = [torch.zeros_like(thr_tensor) for _ in range(world_size)]
+        dist.all_gather(thr_list, thr_tensor)
+        thr_list = [t.item() for t in thr_list]
+
+        total_thr = sum(thr_list)
+        q_weights = [t / total_thr for t in thr_list]
+
+        q_sizes = [int(total_seq_len * w) for w in q_weights]
+        q_sizes[-1] = total_seq_len - sum(q_sizes[:-1])
+
+        q_starts = [0] * world_size
+        for i in range(1, world_size):
+            q_starts[i] = q_starts[i - 1] + q_sizes[i - 1]
+
+        q_local_len = q_sizes[rank]
+        q_start = q_starts[rank]
+
+    else:
+        # Q evenly sharded if proportional flag not set
+        q_local_len = kv_local_len
+        q_start = kv_start
+
+    # ---------------------------------------------------------
+    # Strategy uses KV sizes only
+    # ---------------------------------------------------------
+    strategy = RingAttentionStrategy(
+        block_lens=kv_sizes,          # MUST be KV sizes
+        block_size=max(kv_sizes),     # ring padding size
+        group=None
+    )
+
+    # ---------------------------------------------------------
+    # Allocate tensors:
+    # Q = proportional
+    # K/V = even
     # ---------------------------------------------------------
     batch_size = 1
     nheads = 8
@@ -53,96 +100,24 @@ def main():
     accum_dtype = torch.float32
     causal = True
 
-    # ---------------------------------------------------------
-    # SHARDING LOGIC — EVEN or PROPORTIONAL
-    # ---------------------------------------------------------
-    if proportional:
-        # -----------------------
-        # PROPORTIONAL SHARDING
-        # -----------------------
-        local_thr = float(os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "100"))
-
-        thr_tensor = torch.tensor([local_thr], device=device, dtype=torch.float32)
-        thr_list = [torch.zeros_like(thr_tensor) for _ in range(world_size)]
-        dist.all_gather(thr_list, thr_tensor)
-        thr_list = [t.item() for t in thr_list]
-
-        if rank == 0:
-            print(f"[calib] per-rank speeds: {thr_list}")
-
-        total_thr = sum(thr_list)
-        weights = [t / total_thr for t in thr_list]
-
-        sizes = [int(total_seq_len * w) for w in weights]
-        sizes[-1] = total_seq_len - sum(sizes[:-1])  # rounding fix
-
-        starts = [0] * world_size
-        for i in range(1, world_size):
-            starts[i] = starts[i - 1] + sizes[i - 1]
-
-        local_seq_len = sizes[rank]
-        q_start = starts[rank]
-
-        block_size = max(sizes)
-
-        print(f"[rank{rank}] PROPORTIONAL shard: start={q_start}, len={local_seq_len}")
-
-    else:
-        # -----------------------
-        # EVEN SHARDING
-        # -----------------------
-        base = total_seq_len // world_size
-        sizes = [base] * world_size
-        sizes[-1] = total_seq_len - base * (world_size - 1)
-
-        starts = [i * base for i in range(world_size)]
-        q_start = starts[rank]
-        local_seq_len = sizes[rank]
-
-        block_size = base
-
-        print(f"[rank{rank}] EVEN shard: start={q_start}, len={local_seq_len}")
-
-    # ---------------------------------------------------------
-    # Setup RingAttentionStrategy
-    # Your strategy requires ONLY:
-    #       block_size
-    #       group
-    # ---------------------------------------------------------
-    strategy = RingAttentionStrategy(
-        block_size=block_size,
-        group=None
-    )
-
-    # ---------------------------------------------------------
-    # Allocate Q/K/V tensors for this shard
-    # ---------------------------------------------------------
     torch.manual_seed(42 + rank)
-    q = torch.randn(batch_size, nheads, local_seq_len, head_dim,
-                    device=device, dtype=torch.float16)
-    k = torch.randn(batch_size, nheads, local_seq_len, head_dim,
-                    device=device, dtype=torch.float16)
-    v = torch.randn(batch_size, nheads, local_seq_len, head_dim,
-                    device=device, dtype=torch.float16)
 
-    if rank == 0:
-        print(f"[rank0] Q/K/V shapes: {q.shape}")
+    q = torch.randn(batch_size, nheads, q_local_len, head_dim, device=device, dtype=torch.float16)
+    k = torch.randn(batch_size, nheads, kv_local_len, head_dim, device=device, dtype=torch.float16)
+    v = torch.randn(batch_size, nheads, kv_local_len, head_dim, device=device, dtype=torch.float16)
 
     # ---------------------------------------------------------
-    # One correctness run
+    # Forward run for correctness
     # ---------------------------------------------------------
     out = _compute_attention_ring_pass_kv(
         q, k, v, None,
         strategy,
         q_start,
-        local_seq_len,
+        q_local_len,
         scale,
         accum_dtype,
         causal
     )
-
-    if rank == 0:
-        print(f"[rank0] initial output sum = {out.sum().item():.4f}")
 
     torch.cuda.synchronize()
 
@@ -150,9 +125,11 @@ def main():
     # Warmup
     # ---------------------------------------------------------
     for _ in range(3):
-        _ = _compute_attention_ring_pass_kv(
-            q, k, v, None, strategy,
-            q_start, local_seq_len,
+        _compute_attention_ring_pass_kv(
+            q, k, v, None,
+            strategy,
+            q_start,
+            q_local_len,
             scale,
             accum_dtype,
             causal
@@ -162,32 +139,30 @@ def main():
     # ---------------------------------------------------------
     # Benchmark
     # ---------------------------------------------------------
-    start = time.perf_counter()
     iters = 10
+    start = time.perf_counter()
 
     for _ in range(iters):
         out = _compute_attention_ring_pass_kv(
-            q, k, v, None, strategy,
-            q_start, local_seq_len,
+            q, k, v, None,
+            strategy,
+            q_start,
+            q_local_len,
             scale,
             accum_dtype,
             causal
         )
 
     torch.cuda.synchronize()
-    elapsed_ms = (time.perf_counter() - start) / iters * 1000
+    elapsed = (time.perf_counter() - start) / iters * 1000
 
-    # ---------------------------------------------------------
-    # Summary
-    # ---------------------------------------------------------
     if rank == 0:
-        print("\n--- Benchmark Summary ---")
-        print(f"GPUs:             {world_size}")
-        print(f"Total seq_len:    {total_seq_len}")
-        print(f"Shard sizes:      {sizes}")
-        print(f"Sharding mode:    {'proportional' if proportional else 'even'}")
-        print(f"Avg time / call:  {elapsed_ms:.2f} ms")
-        print("--- End Summary ---\n")
+        print("\n=== Benchmark Summary ===")
+        print(f"Q shard sizes: { [q_local_len if i==rank else '...'] }")
+        print(f"KV shard sizes: {kv_sizes}")
+        print(f"Mode: {'Q-proportional' if proportional else 'even'}")
+        print(f"Avg time per call: {elapsed:.2f} ms")
+        print("===========================")
 
     dist.destroy_process_group()
 
