@@ -49,33 +49,46 @@ def main():
         print(f"[calib] per-rank speeds: {all_speeds}")
 
     # -----------------------------
-    # Hetero token allocation
+    # Sharding mode: EVEN vs PROP
     # -----------------------------
     total_seq_len = args.total_seq_len
-    sum_speed = sum(all_speeds)
+    shard_mode = os.environ.get("SHARD_MODE", "proportional").lower()
 
-    tokens_float = [total_seq_len * s / sum_speed for s in all_speeds]
-    block_lens = [int(t) for t in tokens_float]
-    remainder = total_seq_len - sum(block_lens)
+    if shard_mode == "even":
+        # Ignore speeds, just split tokens evenly
+        base = total_seq_len // world_size
+        block_lens = [base] * world_size
+        remainder = total_seq_len - sum(block_lens)
+        # give leftover tokens to lowest ranks (or any policy you like)
+        for i in range(remainder):
+            block_lens[i] += 1
+        if rank == 0:
+            print(f"[calib] SHARD_MODE=even, block_lens={block_lens}")
+    else:
+        # Proportional to speed (what you had before)
+        sum_speed = sum(all_speeds)
+        tokens_float = [total_seq_len * s / sum_speed for s in all_speeds]
+        block_lens = [int(t) for t in tokens_float]
+        remainder = total_seq_len - sum(block_lens)
 
-    # give leftover tokens to largest fractional parts
-    frac = [(tokens_float[i] - block_lens[i], i) for i in range(world_size)]
-    frac.sort(reverse=True)
-    for k in range(remainder):
-        _, idx = frac[k]
-        block_lens[idx] += 1
+        frac = [(tokens_float[i] - block_lens[i], i) for i in range(world_size)]
+        frac.sort(reverse=True)
+        for k in range(remainder):
+            _, idx = frac[k]
+            block_lens[idx] += 1
+        if rank == 0:
+            print(f"[calib] SHARD_MODE=proportional, block_lens={block_lens}")
 
+    # prefix sums
     block_starts = [0]
     for i in range(world_size - 1):
         block_starts.append(block_starts[-1] + block_lens[i])
-
-    if rank == 0:
-        print(f"[calib] block_lens={block_lens}, block_starts={block_starts}")
 
     block_lens_tensor = torch.tensor(block_lens, device=device, dtype=torch.long)
     block_starts_tensor = torch.tensor(block_starts, device=device, dtype=torch.long)
     dist.broadcast(block_lens_tensor, src=0)
     dist.broadcast(block_starts_tensor, src=0)
+
     block_lens = block_lens_tensor.cpu().tolist()
     block_starts = block_starts_tensor.cpu().tolist()
 

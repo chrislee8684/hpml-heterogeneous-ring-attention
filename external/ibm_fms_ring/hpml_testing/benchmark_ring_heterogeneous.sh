@@ -1,16 +1,9 @@
 #!/bin/bash
-
-# This script manually launches two distributed processes for the ring attention
-# benchmark, bypassing torchrun to allow for setting per-process environment
-# variables for MPS-based GPU throttling.
-
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
-# --- Configuration ---
 STRONG_GPU_PERCENTAGE=${STRONG_GPU_PERCENTAGE:-100}
 WEAK_GPU_PERCENTAGE=${WEAK_GPU_PERCENTAGE:-10}
-SEQ_LEN=${SEQ_LEN:-16384}   # safer default than 32768
-# --- End Configuration ---
+SEQ_LEN=${SEQ_LEN:-16384}
 
 export WORLD_SIZE=2
 export MASTER_ADDR='localhost'
@@ -20,56 +13,56 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 export PYTHONPATH="$SCRIPT_DIR/../:$PYTHONPATH"
 
 ########################
-# 1) EVEN / "REGULAR"
+# 1) EVEN SHARDING, HETERO SPEEDS (100 / 10)
 ########################
-echo "-------------------------Regular (even sharding)--------------------------"
+echo "-------------------------Even sharding (hetero)--------------------------"
 echo "Starting benchmark with total sequence length: $SEQ_LEN"
-echo "Rank 0 (Strong GPU) MPS: $STRONG_GPU_PERCENTAGE%"
-echo "Rank 1 (Strong GPU) MPS: $STRONG_GPU_PERCENTAGE%"
+echo "Rank 0 MPS: $STRONG_GPU_PERCENTAGE%"
+echo "Rank 1 MPS: $WEAK_GPU_PERCENTAGE%"
 echo "--------------------------------------------------------------------"
 
 # Rank 0
 export RANK=0
 export LOCAL_RANK=0
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE \
+SHARD_MODE=even CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE \
 python3 "$SCRIPT_DIR/test_ring_prefill.py" \
     --total_seq_len $SEQ_LEN &
 
 # Rank 1
 export RANK=1
 export LOCAL_RANK=1
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE \
+SHARD_MODE=even CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$WEAK_GPU_PERCENTAGE \
 python3 "$SCRIPT_DIR/test_ring_prefill.py" \
     --total_seq_len $SEQ_LEN &
 
 wait
 echo "--------------------------------------------------------------------"
-echo "Benchmark Regular (even sharding) finished."
+echo "Benchmark Even (hetero) finished."
 echo
 
 ########################
-# 2) PROPORTIONAL
+# 2) PROPORTIONAL SHARDING, SAME HETERO SPEEDS (100 / 10)
 ########################
-echo "-------------------------Proportion (hetero sharding)--------------------------"
+echo "-------------------------Proportional sharding (hetero)--------------------------"
 echo "Starting benchmark with total sequence length: $SEQ_LEN"
-echo "Rank 0 (Strong GPU) MPS: $STRONG_GPU_PERCENTAGE%"
-echo "Rank 1 (Weak GPU)   MPS: $WEAK_GPU_PERCENTAGE%"
+echo "Rank 0 MPS: $STRONG_GPU_PERCENTAGE%"
+echo "Rank 1 MPS: $WEAK_GPU_PERCENTAGE%"
 echo "--------------------------------------------------------------------"
 
 # Rank 0
 export RANK=0
 export LOCAL_RANK=0
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE \
+SHARD_MODE=proportional CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$STRONG_GPU_PERCENTAGE \
 python3 "$SCRIPT_DIR/test_ring_prefill.py" \
     --total_seq_len $SEQ_LEN &
 
 # Rank 1
 export RANK=1
 export LOCAL_RANK=1
-CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$WEAK_GPU_PERCENTAGE \
+SHARD_MODE=proportional CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$WEAK_GPU_PERCENTAGE \
 python3 "$SCRIPT_DIR/test_ring_prefill.py" \
     --total_seq_len $SEQ_LEN &
 
 wait
 echo "--------------------------------------------------------------------"
-echo "Benchmark Proportion (hetero sharding) finished."
+echo "Benchmark Proportional (hetero) finished."
