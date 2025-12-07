@@ -74,7 +74,7 @@ def ring_attention(
 
     #decode check
     is_decode = (use_cache and past_key_value_state is not None and past_key_value_state[0].numel() > 0)
-    
+
     if is_decode:
         return _ring_attention_pass_q(
             x_norm=x_norm,
@@ -110,7 +110,7 @@ def _ring_attention_pass_q(
     position_ids: Optional[Tensor] = None,
     past_key_value_state: Optional[Tuple[Tensor, Tensor]] = None,
     use_cache: bool = False,
-    causal: bool = False,   
+    causal: bool = False,
 ):
     return 0
 
@@ -178,7 +178,7 @@ def _ring_attention_pass_kv(
           return out, (k, v)
       else:
           return out
-      
+
 
 def _compute_qkv_and_rope(
     attn: MultiHeadAttention,
@@ -239,22 +239,25 @@ def _online_softmax_update(
     return numerator, denominator, new_max_score
 
 
-#rewriting to use online softmax and use single approach (use online softmax and calculate max iteratively)
-#now with async communication-computation overlap
 def _compute_attention_ring_pass_kv(
     q: Tensor,
     k: Tensor,
     v: Tensor,
     mask: Optional[Tensor],
     strategy: RingAttentionStrategy,
-    q_start: int, # global start index for queries in q
-    num_valid_tokens: int,   # number of queries in q for this rank's block (num_queries_in_block)
+    q_start: int,
+    num_valid_tokens: int,
     scale: float,
     accum_dtype: torch.dtype,
     causal: bool,
 ) -> Tensor:
     """
     Ring attention computation using online softmax with async communication overlap.
+
+    Pattern: Start Send → Compute (overlaps with send) → Wait for Receive → Swap buffers
+
+    Key insight: ring_shift_kv_start both sends current_k/v AND receives into new buffers.
+    We can compute on current_k/v while the send/recv is in flight since we're just reading.
     """
     batch_size, nheads, _, _ = q.shape
     emb_v = v.shape[-1]
@@ -264,7 +267,7 @@ def _compute_attention_ring_pass_kv(
     denominator = torch.zeros((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
     max_score = torch.full((batch_size, nheads, num_valid_tokens, 1), float("-inf"), device=q.device, dtype=accum_dtype)
 
-    # Cast tensors to accumulator dtype
+    # Cast tensors to accumulator dtype (on default stream)
     q_cast = q.to(accum_dtype)
     current_k = k.to(accum_dtype)
     current_v = v.to(accum_dtype)
@@ -275,74 +278,87 @@ def _compute_attention_ring_pass_kv(
     # Track current KV block length
     current_k_len = current_k.shape[2]
 
-    # Async handles for next iteration's KV
+    # Create a separate CUDA stream for compute
+    compute_stream = torch.cuda.Stream(device=q.device)
+    default_stream = torch.cuda.current_stream()
+
+    # Ensure compute stream can see initial tensors created on default stream
+    compute_stream.wait_stream(default_stream)
+
+    # Async handles
     next_k_handle = None
     next_v_handle = None
 
-    # Main ring loop with async communication-computation overlap
+    # Main ring loop
+    # Pattern per iteration: Start Async Send/Recv → Compute → Wait for Recv → Swap
     for i in range(strategy.world_size):
         print(f"[RING DEBUG rank={strategy.rank}] === iteration {i}/{strategy.world_size} ===", flush=True)
 
-        # STEP 1: Start async communication for NEXT iteration BEFORE compute
-        # This allows NCCL to transfer data while we compute on current block
+        # STEP 1: Start async communication (send current_k/v, receive into new buffers)
+        # Do this BEFORE compute so send can overlap with compute
         if i < strategy.world_size - 1:
-            import time as time_module
-            comm_start = time_module.perf_counter()
-            print(f"[RING DEBUG rank={strategy.rank}] starting async KV shift for next iteration", flush=True)
+            print(f"[RING DEBUG rank={strategy.rank}] STEP 1: starting async KV shift", flush=True)
             next_k_handle, next_v_handle = strategy.ring_shift_kv_start(
                 current_k, current_v, current_k_len, is_decode_step=False
             )
-            comm_init_time = (time_module.perf_counter() - comm_start) * 1000
-            print(f"[RING DEBUG rank={strategy.rank}] async comm initiated in {comm_init_time:.2f}ms, now computing...", flush=True)
+            print(f"[RING DEBUG rank={strategy.rank}] async comm initiated", flush=True)
 
-        # STEP 2: Compute attention for CURRENT block (overlaps with communication)
-        source_rank = (strategy.rank - i) % strategy.world_size
+        # STEP 2: Compute attention on current KV block (overlaps with send/recv)
+        source_rank = (strategy.rank - i + strategy.world_size) % strategy.world_size
         block_offset = source_rank * strategy.block_size
+        print(f"[RING DEBUG rank={strategy.rank}] STEP 2: computing, source_rank={source_rank}, block_offset={block_offset}", flush=True)
 
-        import time as time_module
-        compute_start = time_module.perf_counter()
+        with torch.cuda.stream(compute_stream):
+            if num_valid_tokens > 0 and current_k_len > 0:
+                # Global indices for current KV block
+                key_block_global_indices = torch.arange(
+                    block_offset, block_offset + current_k_len, device=q.device
+                )
 
-        if num_valid_tokens > 0 and current_k_len > 0:
-            # Global indices for current KV block
-            key_block_global_indices = torch.arange(
-                block_offset, block_offset + current_k_len, device=q.device
-            )
+                # Slice mask for current block
+                current_mask_slice = None
+                if mask is not None:
+                    current_mask_slice = mask[...,
+                        q_start : q_start + num_valid_tokens,
+                        block_offset : block_offset + current_k_len
+                    ]
 
-            # Slice mask for current block
-            current_mask_slice = None
-            if mask is not None:
-                current_mask_slice = mask[...,
-                    q_start : q_start + num_valid_tokens,
-                    block_offset : block_offset + current_k_len
-                ]
+                # Compute attention scores
+                attn_weights = _attn_scores(
+                    q_cast, current_k, query_global_indices, key_block_global_indices,
+                    scale, current_mask_slice, causal
+                )
 
-            # Compute attention scores
-            attn_weights = _attn_scores(
-                q_cast, current_k, query_global_indices, key_block_global_indices,
-                scale, current_mask_slice, causal
-            )
+                # Update accumulators using online softmax
+                numerator, denominator, max_score = _online_softmax_update(
+                    attn_weights, current_v, numerator, denominator, max_score
+                )
 
-            # Update accumulators using online softmax
-            numerator, denominator, max_score = _online_softmax_update(
-                attn_weights, current_v, numerator, denominator, max_score
-            )
+        print(f"[RING DEBUG rank={strategy.rank}] compute kernels launched", flush=True)
 
-        compute_time = (time_module.perf_counter() - compute_start) * 1000
-        print(f"[RING DEBUG rank={strategy.rank}] compute done in {compute_time:.2f}ms", flush=True)
-
-        # STEP 3: Wait for async communication to complete (should already be done if compute took longer)
+        # STEP 3: Wait for async recv to complete and swap buffers for next iteration
         if i < strategy.world_size - 1:
-            wait_start = time_module.perf_counter()
-            print(f"[RING DEBUG rank={strategy.rank}] waiting for async KV transfer...", flush=True)
+            # First sync compute stream - we need compute to finish before we swap buffers
+            print(f"[RING DEBUG rank={strategy.rank}] STEP 3: syncing compute stream", flush=True)
+            compute_stream.synchronize()
+            print(f"[RING DEBUG rank={strategy.rank}] compute stream synced, waiting for recv", flush=True)
+
+            # Now wait for the P2P recv to complete
             next_k, next_k_len = strategy.ring_shift_wait(next_k_handle)
             next_v, _ = strategy.ring_shift_wait(next_v_handle)
-            wait_time = (time_module.perf_counter() - wait_start) * 1000
-            print(f"[RING DEBUG rank={strategy.rank}] async wait took {wait_time:.2f}ms (ideally ~0 if overlapped), next_k_len={next_k_len}", flush=True)
+            print(f"[RING DEBUG rank={strategy.rank}] recv complete, next_k_len={next_k_len}", flush=True)
 
-            # Prepare for next iteration
+            # Swap buffers: received data becomes current for next iteration
             current_k = next_k.to(accum_dtype)
             current_v = next_v.to(accum_dtype)
             current_k_len = next_k_len
+
+            # Ensure compute stream sees the new buffers
+            compute_stream.wait_stream(default_stream)
+
+    # Final sync
+    compute_stream.synchronize()
+    print(f"[RING DEBUG rank={strategy.rank}] ring loop complete", flush=True)
 
     # Handle empty case
     if num_valid_tokens == 0:
@@ -352,32 +368,38 @@ def _compute_attention_ring_pass_kv(
     out = numerator / (denominator + torch.finfo(accum_dtype).eps)
     return out.to(q.dtype)
 
+
 def _compute_attention_ring_pass_q():
     return
+
 
 def _attn_scores(
     Q: Tensor,
     K: Tensor,
-    query_indices: Tensor, # global indices for queries in Q
-    key_indices: Tensor,   # global indices for keys in K
+    query_indices: Tensor,
+    key_indices: Tensor,
     scale: float,
     mask: Optional[Tensor],
     causal: bool,
 ) -> Tensor:
-    batch_size, nheads, num_q, _ = Q.shape # num_q is num_queries_in_block for Q
-    num_k = K.shape[2]          # num_k is current_block_k_len for K
+    print(f"[ATTN_SCORES DEBUG] entered, Q.shape={Q.shape}, K.shape={K.shape}", flush=True)
+    batch_size, nheads, num_q, _ = Q.shape
+    num_k = K.shape[2]
     if num_q == 0 or num_k == 0:
         return Q.new_empty((batch_size, nheads, num_q, num_k))
 
+    print(f"[ATTN_SCORES DEBUG] calling torch.matmul...", flush=True)
     scores = torch.matmul(Q / scale, K.transpose(-2, -1))
+    print(f"[ATTN_SCORES DEBUG] matmul done", flush=True)
+
     if mask is not None:
         scores = scores + mask.to(scores.dtype)
+
     if causal:
-        # build a [1,1,q_len,k_len] mask where key_pos > query_pos
+        print(f"[ATTN_SCORES DEBUG] applying causal mask...", flush=True)
         future_mask = (key_indices[None, :] > query_indices[:, None])
-        future_mask = future_mask.unsqueeze(0).unsqueeze(0) 
+        future_mask = future_mask.unsqueeze(0).unsqueeze(0)
         scores = scores.masked_fill(future_mask, float("-inf"))
+        print(f"[ATTN_SCORES DEBUG] causal mask applied", flush=True)
+
     return scores
-
-
-

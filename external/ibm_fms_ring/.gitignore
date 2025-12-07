@@ -13,3 +13,6 @@ fms.egg-info
 ibm_fms.egg-info
 slurm-*
 benchmark_results/run*
+hpml_testing/benchmark_results/run*
+hpml_testing/benchmark_results/summary*
+hpml_testing/benchmark_results/tex*

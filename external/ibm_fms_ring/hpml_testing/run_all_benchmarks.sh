@@ -17,6 +17,10 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="benchmark_results"
 NUM_GPUS=2
 
+module load conda/latest
+conda activate context_parallelism
+module load cuda/12.6
+
 SUMMARY_CSV="$RESULTS_DIR/summary_${TIMESTAMP}.csv"
 LOG_FILE="$RESULTS_DIR/run_${TIMESTAMP}.log"
 
