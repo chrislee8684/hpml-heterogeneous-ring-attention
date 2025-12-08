@@ -294,6 +294,8 @@ def _compute_attention_ring_pass_kv(
     total_bytes_transferred = 0
     comm_events = []  # List of (start_event, end_event) tuples
     compute_events = []  # List of (start_event, end_event) tuples
+    diag_compute_events = []  # (start, end) for diagonal block compute
+    offdiag_compute_events = []  # (start, end) for off-diagonal block compute
 
     # Track layer for printing
     _layer_call_counter += 1
@@ -308,6 +310,11 @@ def _compute_attention_ring_pass_kv(
     for i in range(strategy.world_size):
         # Start async comm for next iteration (overlaps with compute)
         comm_start_event = None
+
+        # NEW: track what we actually compute this iteration
+        did_diag_compute = False
+        did_offdiag_compute = False
+
         if i < strategy.world_size - 1:
             reqs, recv_k, recv_v, recv_len, comm_start_event = strategy.ring_shift_kv_async(
                 cur_k, cur_v, cur_len, enable_timing=PROFILE
@@ -348,17 +355,24 @@ def _compute_attention_ring_pass_kv(
                 numerator = flash_out.to(accum_dtype)
                 denominator = torch.ones((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
                 max_score = torch.zeros((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
+                did_diag_compute
             else:
                 # Off-diagonal: use naive attention with proper masking
                 key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
                 mask_slice = mask[..., q_start:q_start + num_valid_tokens, block_offset:block_offset + cur_len] if mask is not None else None
                 attn_weights = _attn_scores(q_cast, cur_k, query_indices, key_indices, scale, mask_slice, causal)
                 numerator, denominator, max_score = _online_softmax_update(attn_weights, cur_v, numerator, denominator, max_score)
+                did_offdiag_compute = True
 
         # Record compute end event on DEFAULT stream
         if compute_end:
             compute_end.record()
             compute_events.append((compute_start, compute_end))
+
+            if did_diag_compute:
+                diag_compute_events.append((compute_start, compute_end))
+            elif did_offdiag_compute:
+                offdiag_compute_events.append((compute_start, compute_end))
 
         # Wait for comm and get end event (records AFTER transfers complete)
         if i < strategy.world_size - 1:
@@ -386,6 +400,12 @@ def _compute_attention_ring_pass_kv(
 
     for start_evt, end_evt in compute_events:
         total_compute_time_ms += start_evt.elapsed_time(end_evt)
+    
+    for start_evt, end_evt in diag_compute_events:
+        total_diag_compute_ms += start_evt.elapsed_time(end_evt)
+
+    for start_evt, end_evt in offdiag_compute_events:
+        total_offdiag_compute_ms += start_evt.elapsed_time(end_evt)
 
     # Accumulate timing for summary
     global _total_compute_ms, _total_comm_ms, _total_bytes
@@ -399,6 +419,8 @@ def _compute_attention_ring_pass_kv(
 
         print(f"\n[Ring Attention layer={current_layer}] tokens={num_valid_tokens}, world_size={strategy.world_size}")
         print(f"  comm: {total_comm_time_ms:6.2f}ms | compute: {total_compute_time_ms:6.2f}ms")
+        print(f"  compute: {total_compute_time_ms:6.2f} ms "
+              f"(diag: {total_diag_compute_ms:6.2f} ms, offdiag: {total_offdiag_compute_ms:6.2f} ms)")
         print(f"  data: {total_bytes_transferred/1e6:.2f} MB | bandwidth: {comm_bandwidth_gbps:.2f} GB/s")
         if total_comm_time_ms < total_compute_time_ms:
             print(f"  comm hidden behind compute")
