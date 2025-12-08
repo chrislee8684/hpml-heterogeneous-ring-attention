@@ -147,13 +147,26 @@ def main():
     torch.cuda.synchronize()
     elapsed = (time.perf_counter() - start) / num_iters * 1000
 
-    if rank == 1:
-        print("\n--- Benchmark Summary ---")
+
+
+    elapsed_tensor = torch.tensor([elapsed], device=device)
+    dist.all_reduce(elapsed_tensor, op=dist.ReduceOp.MAX)
+    global_max_elapsed = elapsed_tensor.item()
+
+    if rank == 0:
+        print("\n--- Benchmark Summary (global) ---")
         print(f"GPUs: {world_size}")
         print(f"Total seq_len: {total_seq_len}")
         print(f"Local seq_len (rank 0): {local_seq_len}")
-        print(f"Avg time per call: {elapsed:.2f} ms")
+        print(f"Global max time per call: {global_max_elapsed:.2f} ms")
         print("--- End Summary ---\n")
+    # if rank == 0:
+    #     print("\n--- Benchmark Summary ---")
+    #     print(f"GPUs: {world_size}")
+    #     print(f"Total seq_len: {total_seq_len}")
+    #     print(f"Local seq_len (rank 0): {local_seq_len}")
+    #     print(f"Avg time per call: {elapsed:.2f} ms")
+    #     print("--- End Summary ---\n")
 
     dist.destroy_process_group()
 
