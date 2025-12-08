@@ -147,7 +147,7 @@ def main():
     torch.cuda.synchronize()
     elapsed = (time.perf_counter() - start) / num_iters * 1000
 
-    if rank == 1:
+    if rank == 0:
         print("\n--- Benchmark Summary ---")
         print(f"GPUs: {world_size}")
         print(f"Total seq_len: {total_seq_len}")
