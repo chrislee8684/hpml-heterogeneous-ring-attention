@@ -9,9 +9,10 @@ from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import DistributedStrategy, RingAttentionStrategy
 
 try:
-    from triton_offdiag_block import block_softmax_stats_triton
+    from .triton_offdiag_block import block_softmax_stats_triton
     _HAS_TRITON = True
-except ImportError:
+except ImportError as e:
+    print("[Triton IMPORT ERROR]", e)
     _HAS_TRITON = False
 
 # Global state for profiling
