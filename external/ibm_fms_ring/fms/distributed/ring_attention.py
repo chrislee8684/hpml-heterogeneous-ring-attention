@@ -8,6 +8,9 @@ from typing import Optional, Tuple
 from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import DistributedStrategy, RingAttentionStrategy
 
+# Use Triton only when block size is big enough (Q_len*K_len)
+_TRITON_MIN_WORK = 4096  # or 16384, tune based on your profiling
+
 try:
     from .triton_offdiag_block import block_softmax_stats_triton
     _HAS_TRITON = True
@@ -608,13 +611,19 @@ def _block_softmax_stats(
 ) -> Tuple[Tensor, Tensor, Tensor]:
     # Triton path
     if _HAS_TRITON and Q.is_cuda:
-        # NOTE: mask is currently ignored in the kernel;
-        # if you rely on pad mask, apply it to scores or K/V before calling.
+        work = Q.shape[2] * K.shape[2]  # Q_block_len * K_block_len
+
+        if work < _TRITON_MIN_WORK:
+            # too small to benefit from Triton – kernel launch overhead dominates
+            return _block_softmax_stats_naive(
+                Q, K, V, query_indices, key_indices, scale, mask, causal
+            )
 
         print("[DEBUG] Using Triton offdiag kernel")
         return block_softmax_stats_triton(
             Q, K, V, query_indices, key_indices, scale, mask, causal
         )
+
     # Fallback: pure PyTorch, correct but slower
     print("[DEBUG] Using naive block stats")
     return _block_softmax_stats_naive(
