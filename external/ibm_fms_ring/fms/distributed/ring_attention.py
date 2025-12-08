@@ -300,7 +300,7 @@ def _compute_attention_ring_pass_kv(
     # Track layer for printing
     _layer_call_counter += 1
     current_layer = _layer_call_counter
-    should_print = (current_layer == 2)  # Only print first layer
+    should_print = (current_layer == 1)  # Only print first layer
 
     # Print stream info once per forward pass
     if not _printed_stream_info:
