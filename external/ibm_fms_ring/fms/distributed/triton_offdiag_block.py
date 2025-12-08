@@ -54,6 +54,9 @@ def _offdiag_block_stats_kernel(
 
     # Load this query's global position
     q_pos = tl.load(query_idx_ptr + q_idx)
+    
+    # Offsets for value dimension (reused when loading and storing V)
+    dv_offsets = tl.arange(0, D_V)
 
     # 3. Initialize running stats m, l, z
     NEG_INF = -1e9
@@ -81,7 +84,6 @@ def _offdiag_block_stats_kernel(
         )
 
         # 4b. Load V_tile: [BLOCK_K, D_V]
-        dv_offsets = tl.arange(0, D_V)
         V_tile_ptr = (
             V_ptr
             + b_idx * stride_vb
