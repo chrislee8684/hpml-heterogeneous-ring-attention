@@ -609,10 +609,13 @@ def _block_softmax_stats(
     if _HAS_TRITON and Q.is_cuda:
         # NOTE: mask is currently ignored in the kernel;
         # if you rely on pad mask, apply it to scores or K/V before calling.
+
+        print("[DEBUG] Using Triton offdiag kernel")
         return block_softmax_stats_triton(
             Q, K, V, query_indices, key_indices, scale, mask, causal
         )
     # Fallback: pure PyTorch, correct but slower
+    print("[DEBUG] Using naive block stats")
     return _block_softmax_stats_naive(
         Q, K, V, query_indices, key_indices, scale, mask, causal
     )
