@@ -7,7 +7,7 @@ import math  # you don't actually need this now, but ok
 
 # Import after torch / dist but BEFORE usage
 from fms.distributed.strategy import RingAttentionStrategy
-from fms.distributed.llama_ring import _compute_attention_ring_pass_kv
+from fms.distributed.ring_attention import _compute_attention_ring_pass_kv
 
 
 def main():

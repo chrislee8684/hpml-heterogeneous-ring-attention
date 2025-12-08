@@ -140,8 +140,13 @@ def _ring_attention_pass_kv(
       KV tensors rotate around the ring while Q stays local.
       """
       batch_size, num_valid_tokens_input_shard, emb_dim = x_norm.shape
-      assert num_valid_tokens_input_shard == valid_len
-      current_rank_token_global_start_idx = strategy.rank * strategy.block_size
+    #   assert num_valid_tokens_input_shard == valid_len
+    #   current_rank_token_global_start_idx = strategy.rank * strategy.block_size
+
+      # in hetero:
+      assert num_valid_tokens_input_shard == strategy.local_q_len
+      current_rank_token_global_start_idx = strategy.local_q_start
+      valid_len = strategy.local_q_len
 
       # slice to valid length to be safe
       current_rank_input_slice = x_norm[:, :valid_len]
