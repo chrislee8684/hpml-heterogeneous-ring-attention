@@ -8,6 +8,12 @@ from typing import Optional, Tuple
 from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import DistributedStrategy, RingAttentionStrategy
 
+try:
+    from triton_offdiag_block import block_softmax_stats_triton
+    _HAS_TRITON = True
+except ImportError:
+    _HAS_TRITON = False
+
 # Global state for profiling
 _layer_call_counter = 0
 _printed_stream_info = False
@@ -366,7 +372,7 @@ def _compute_attention_ring_pass_kv(
                 )
 
                 # TEMP: naive block stats (later replaced by CUDA kernel)
-                z_block, l_block, m_block = _block_softmax_stats_naive(
+                z_block, l_block, m_block = _block_softmax_stats(
                     q_cast, cur_k, cur_v,
                     query_indices, key_indices,
                     scale, mask_slice, causal
@@ -586,3 +592,27 @@ def _block_softmax_stats_naive(
     z_block = torch.matmul(exp_scores, V)              # [B,H,Q,Dv]
 
     return z_block, l_block, m_block
+
+
+
+def _block_softmax_stats(
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
+    query_indices: Tensor,
+    key_indices: Tensor,
+    scale: float,
+    mask: Optional[Tensor],
+    causal: bool,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    # Triton path
+    if _HAS_TRITON and Q.is_cuda:
+        # NOTE: mask is currently ignored in the kernel;
+        # if you rely on pad mask, apply it to scores or K/V before calling.
+        return block_softmax_stats_triton(
+            Q, K, V, query_indices, key_indices, scale, mask, causal
+        )
+    # Fallback: pure PyTorch, correct but slower
+    return _block_softmax_stats_naive(
+        Q, K, V, query_indices, key_indices, scale, mask, causal
+    )
