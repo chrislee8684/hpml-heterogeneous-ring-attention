@@ -32,7 +32,7 @@ def main():
 
     # Import after dist init
     from fms.distributed.strategy import RingAttentionStrategy
-    from fms.distributed.llama_ring import _compute_attention_ring_pass_kv
+    from fms.distributed.ring_attention import _compute_attention_ring_pass_kv
 
     # Test config
     batch_size = 1

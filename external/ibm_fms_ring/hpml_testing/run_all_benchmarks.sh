@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu-preempt
-#SBATCH -t 0:15:00
+#SBATCH -t 0:10:00
 #SBATCH --gpus-per-node=2
 #SBATCH --constraint=a100
 #SBATCH --mem=26G
@@ -45,13 +45,15 @@ run_benchmark() {
           --num_decode_tokens 0 \
           --batch_size 1 \
           --run_ring_first \
-          --summary_csv "$SUMMARY_CSV"
+          --summary_csv "$SUMMARY_CSV" \
+          --disable_flash \
+          
   }
 
 echo "Ring Attention Benchmark - $(date)" | tee "$LOG_FILE"
 
 #512 1024 4096 8192 16384 32768 65536
-for num_count in 256 512 1024 4096 8192 16384 32768 65536 ; do
+for num_count in 256 512 1024 4096 ; do
     echo "Running: $num_count tokens" | tee -a "$LOG_FILE"
     run_benchmark $num_count $NUM_GPUS 2>&1 | tee -a "$LOG_FILE"
 done

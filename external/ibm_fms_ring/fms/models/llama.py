@@ -13,7 +13,7 @@ from fms.distributed.strategy import (
     RingAttentionStrategy,
     TensorParallelStrategy,
 )
-from fms.distributed.llama_ring import ring_forward
+from fms.distributed.ring_attention import ring_forward
 
 
 from fms.modules.attention import MultiHeadAttention

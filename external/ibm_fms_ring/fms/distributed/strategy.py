@@ -7,7 +7,7 @@ import torch
 import math
 from torch import Tensor, nn
 import torch.distributed
-import torch.distributed as dist # Keep this for P2POp if not already imported
+import torch.distributed as dist
 from torch.distributed import P2POp
 
 from fms.utils import tp_wrapping
@@ -164,19 +164,6 @@ class TensorParallelStrategy(DistributedStrategy):
     def _distribute_layer(self, block: nn.Module, layer: int) -> nn.Module:
         return tp_wrapping.apply_tp(block, self.group)
 
-class RingShiftHandle:
-    __slots__ = ['requests', 'recv_tensor', 'recv_length', 'start_time', 'is_decode', 'valid_len_if_sync']
-    
-    def __init__(self, requests: Any, recv_tensor: torch.Tensor, recv_length: Any, start_time: float, is_decode: bool, valid_len_if_sync: Optional[int] = None):
-        self.requests = requests
-        self.recv_tensor = recv_tensor
-        # recv_length is a torch.Tensor in async mode, or None in decode/sync mode
-        self.recv_length = recv_length
-        self.start_time = start_time
-        self.is_decode = is_decode
-        # tensor's valid length for single device 
-        self.valid_len_if_sync = valid_len_if_sync
-
 
 class RingAttentionStrategy(DistributedStrategy):
     def __init__(
@@ -192,37 +179,15 @@ class RingAttentionStrategy(DistributedStrategy):
             self.group = None
             self.rank = 0
             self.world_size = 1
-            print("torch.distributed not initialized, defaulting to world_size=1, rank=0.")
 
         self.block_size = block_size
         self._original_seq_len: Optional[int] = None
         self._local_valid_len: Optional[int] = None
-        self._comm_time_ms: float = 0.0
-        self._decode_step_counter = 0
-        self._is_decode_phase = False
 
-    def start_decode_phase(self):
-        self._is_decode_phase = True
-        self._decode_step_counter = 0
+        # Dedicated CUDA stream for async communication overlap
+        self._comm_stream = torch.cuda.Stream(priority=-1) if torch.cuda.is_available() else None
 
-    def get_decode_q_owner(self) -> int:
-        """Returns which GPU should compute Q for this decode step"""
-        return self._decode_step_counter % self.world_size
-
-    def increment_decode_step(self):
-        self._decode_step_counter += 1
-        
-    def reset_comm_time(self):
-        """HPML: Reset communication time counter."""
-        self._comm_time_ms = 0.0
-
-    def get_comm_time_ms(self) -> float:
-        """HPML: Get accumulated communication time in milliseconds."""
-        return self._comm_time_ms
-
-    def _pad_to_block_size(
-        self, tensor: torch.Tensor, dim: int = 1
-    ) -> torch.Tensor:
+    def _pad_to_block_size(self, tensor: torch.Tensor, dim: int = 1) -> torch.Tensor:
         length = tensor.size(dim)
         if length == self.block_size:
             return tensor
@@ -231,26 +196,20 @@ class RingAttentionStrategy(DistributedStrategy):
         padding = torch.zeros(*pad_shape, dtype=tensor.dtype, device=tensor.device)
         return torch.cat([tensor, padding], dim=dim)
 
-    def _distribute_module(
-        self, module: nn.Module, final_layers: bool = False
-    ) -> nn.Module:
+    def _distribute_module(self, module: nn.Module, final_layers: bool = False) -> nn.Module:
         return module
 
-    def _distribute_layer(
-        self, block: nn.Module, layer: int
-    ) -> nn.Module:
+    def _distribute_layer(self, block: nn.Module, layer: int) -> nn.Module:
         return block
 
-    def shard_input(
-        self, x: torch.Tensor
-    ) -> torch.Tensor:
+    def shard_input(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.size(1)
         self._original_seq_len = seq_len
 
         if self.world_size == 1:
             self._local_valid_len = seq_len
             return x
-        
+
         if self.block_size is None or seq_len > self.block_size:
             self.block_size = math.ceil(seq_len / self.world_size)
         start = self.rank * self.block_size
@@ -261,41 +220,58 @@ class RingAttentionStrategy(DistributedStrategy):
         shp = list(x.shape)
         shp[1] = 0
         return torch.empty(*shp, dtype=x.dtype, device=x.device)
-    
-    def ring_shift_kv_start(
+
+    def ring_shift_kv_async(
         self,
-        k_tensor: torch.Tensor,
-        v_tensor: torch.Tensor,
-        valid_seq_len: int,
-        is_decode_step: bool = False,
-    ) -> Tuple[RingShiftHandle, RingShiftHandle]:
+        k: torch.Tensor,
+        v: torch.Tensor,
+        valid_len: int,
+        enable_timing: bool = False,
+    ) -> Tuple[Any, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.cuda.Event]]:
         """
-        Combined K and V ring shift using async isend/irecv.
-        NCCL internally uses its own stream, allowing overlap with compute on default stream.
-        Returns tuple of (k_handle, v_handle).
+        Start async KV ring shift. Returns (requests, recv_k, recv_v, recv_len, comm_start_event).
+        Communication runs on dedicated stream for overlap with compute.
+        If enable_timing=True, returns CUDA event for start time. End event is recorded in ring_shift_kv_wait.
         """
+        if self.world_size == 1:
+            return None, k, v, torch.tensor([valid_len], device=k.device), None
+
         send_to = (self.rank + 1) % self.world_size
         recv_from = (self.rank - 1 + self.world_size) % self.world_size
         seq_dim = 2
 
-        # Single GPU: trivial
-        if self.world_size == 1:
-            now = time.perf_counter()
-            k_handle = RingShiftHandle(None, k_tensor, None, now, is_decode_step, valid_seq_len)
-            v_handle = RingShiftHandle(None, v_tensor, None, now, is_decode_step, valid_seq_len)
-            return k_handle, v_handle
+        # Slice and pad KV to block_size
+        if valid_len > 0:
+            idx = [slice(None)] * k.ndim
+            idx[seq_dim] = slice(0, valid_len)
+            send_k = self._pad_to_block_size(k[tuple(idx)], dim=seq_dim).contiguous()
+            send_v = self._pad_to_block_size(v[tuple(idx)], dim=seq_dim).contiguous()
+        else:
+            send_k = self._pad_to_block_size(k.new_zeros(*k.shape[:seq_dim], 0, k.shape[-1]), dim=seq_dim).contiguous()
+            send_v = self._pad_to_block_size(v.new_zeros(*v.shape[:seq_dim], 0, v.shape[-1]), dim=seq_dim).contiguous()
 
-        t0 = time.perf_counter()
+        recv_k = torch.empty_like(send_k)
+        recv_v = torch.empty_like(send_v)
+        send_len = torch.tensor([valid_len], dtype=torch.int32, device=k.device)
+        recv_len = torch.empty(1, dtype=torch.int32, device=k.device)
 
-        # Decode: K/V are already the right length
-        if is_decode_step:
-            send_k = k_tensor.contiguous()
-            send_v = v_tensor.contiguous()
-            recv_k = torch.empty_like(send_k)
-            recv_v = torch.empty_like(send_v)
+        # Record event so comm stream waits for send buffers to be ready
+        ready_event = torch.cuda.Event()
+        ready_event.record()
 
-            # Batch all P2P ops together to avoid NCCL deadlock
+        # Create start timing event if requested
+        comm_start_event = torch.cuda.Event(enable_timing=True) if enable_timing else None
+
+        with torch.cuda.stream(self._comm_stream):
+            self._comm_stream.wait_event(ready_event)
+
+            # Record start time on comm stream
+            if comm_start_event:
+                comm_start_event.record()
+
             ops = [
+                P2POp(dist.isend, send_len, send_to),
+                P2POp(dist.irecv, recv_len, recv_from),
                 P2POp(dist.isend, send_k, send_to),
                 P2POp(dist.irecv, recv_k, recv_from),
                 P2POp(dist.isend, send_v, send_to),
@@ -303,100 +279,44 @@ class RingAttentionStrategy(DistributedStrategy):
             ]
             reqs = dist.batch_isend_irecv(ops)
 
-            print(f"[COMM DEBUG rank={self.rank}] decode: initiated batch_isend_irecv with {len(ops)} ops", flush=True)
+        return reqs, recv_k, recv_v, recv_len, comm_start_event
 
-            k_handle = RingShiftHandle(reqs, recv_k, None, t0, True, valid_seq_len)
-            v_handle = RingShiftHandle(reqs, recv_v, None, t0, True, valid_seq_len)
-            return k_handle, v_handle
-
-        # Prefill: slice + pad
-        if valid_seq_len == 0:
-            empty_shape = list(k_tensor.shape)
-            empty_shape[seq_dim] = 0
-            to_send_k = torch.empty(*empty_shape, dtype=k_tensor.dtype, device=k_tensor.device)
-            to_send_v = torch.empty(*empty_shape, dtype=v_tensor.dtype, device=v_tensor.device)
-        else:
-            idx = [slice(None)] * k_tensor.ndim
-            idx[seq_dim] = slice(0, valid_seq_len)
-            to_send_k = k_tensor[tuple(idx)]
-            to_send_v = v_tensor[tuple(idx)]
-
-        padded_k = self._pad_to_block_size(to_send_k, dim=seq_dim).contiguous()
-        padded_v = self._pad_to_block_size(to_send_v, dim=seq_dim).contiguous()
-        recv_k = torch.empty_like(padded_k)
-        recv_v = torch.empty_like(padded_v)
-
-        send_len = torch.tensor([valid_seq_len], dtype=torch.int32, device=k_tensor.device)
-        recv_len = torch.empty(1, dtype=torch.int32, device=k_tensor.device)
-
-        # Batch all P2P ops together to avoid NCCL deadlock
-        # Using batch_isend_irecv ensures all ops are submitted atomically
-        ops = [
-            P2POp(dist.isend, send_len, send_to),
-            P2POp(dist.irecv, recv_len, recv_from),
-            P2POp(dist.isend, padded_k, send_to),
-            P2POp(dist.irecv, recv_k, recv_from),
-            P2POp(dist.isend, padded_v, send_to),
-            P2POp(dist.irecv, recv_v, recv_from),
-        ]
-        reqs = dist.batch_isend_irecv(ops)
-
-        print(f"[COMM DEBUG rank={self.rank}] initiated batch_isend_irecv with {len(ops)} ops, valid_seq_len={valid_seq_len}", flush=True)
-
-        # Both handles share the same requests - waiting on either completes all ops
-        # K and V always have the same length (recv_len applies to both)
-        k_handle = RingShiftHandle(reqs, recv_k, recv_len, t0, False)
-        v_handle = RingShiftHandle(reqs, recv_v, recv_len, t0, False)
-        return k_handle, v_handle
-
-    def ring_shift_wait(self, handle: RingShiftHandle) -> Tuple[torch.Tensor, int]:
+    def ring_shift_kv_wait(
+        self,
+        reqs: Any,
+        recv_k: torch.Tensor,
+        recv_v: torch.Tensor,
+        recv_len: torch.Tensor,
+        enable_timing: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int, Optional[torch.cuda.Event]]:
         """
-        Waits for the async ring shift to complete.
-        req.wait() blocks until NCCL P2P ops finish.
+        Wait for async KV shift to complete. Returns (k, v, valid_len, comm_end_event).
+        If enable_timing=True, records and returns a CUDA event after transfers complete.
         """
-        if handle.requests is None:
-            tensor = handle.recv_tensor
-            valid_len = handle.valid_len_if_sync
+        if reqs is None:
+            return recv_k, recv_v, recv_len.item(), None
 
-            if valid_len == 0:
-                empty_shape = list(tensor.shape)
-                empty_shape[2] = 0
-                return torch.empty(*empty_shape, dtype=tensor.dtype, device=tensor.device), 0
-
-            if handle.is_decode:
-                # return tensor as-is
-                return tensor.clone(), valid_len
-
-            # prefill path
-            idx = [slice(None)] * tensor.ndim
-            idx[2] = slice(0, valid_len)
-            return tensor[tuple(idx)].clone(), valid_len
-
-        # Multi-GPU: wait for all P2P requests to complete
-        for req in handle.requests:
+        for req in reqs:
             req.wait()
 
-        # decode path
-        if handle.is_decode:
-            # decode tensors are already the correct size
-            return handle.recv_tensor.contiguous(), handle.valid_len_if_sync
+        # Record end event AFTER transfers complete (on comm stream)
+        comm_end_event = None
+        if enable_timing:
+            comm_end_event = torch.cuda.Event(enable_timing=True)
+            with torch.cuda.stream(self._comm_stream):
+                comm_end_event.record()
 
-        # prefill path
-        self._comm_time_ms += (time.perf_counter() - handle.start_time) * 1000
+        self._comm_stream.synchronize()
 
-        new_len = handle.recv_length.item()
-        seq_dim = 2
-        idx2 = [slice(None)] * handle.recv_tensor.ndim
-        idx2[seq_dim] = slice(0, new_len)
-        return handle.recv_tensor[tuple(idx2)].contiguous(), new_len
-   
+        new_len = recv_len.item()
+        if new_len == 0:
+            return recv_k[:, :, :0], recv_v[:, :, :0], 0, comm_end_event
+        return recv_k[:, :, :new_len].contiguous(), recv_v[:, :, :new_len].contiguous(), new_len, comm_end_event
+
     def get_local_valid_len(self) -> int:
-        assert self._local_valid_len is not None
-        return self._local_valid_len
+        return self._local_valid_len or 0
 
-    def gather_tensor(
-        self, tensor: torch.Tensor, dim: int = 1
-    ) -> torch.Tensor:
+    def gather_tensor(self, tensor: torch.Tensor, dim: int = 1) -> torch.Tensor:
         if self.world_size == 1:
             return tensor
         t = tensor.contiguous()
@@ -405,7 +325,6 @@ class RingAttentionStrategy(DistributedStrategy):
         gathered = [torch.empty_like(t) for _ in range(self.world_size)]
         torch.distributed.all_gather(gathered, t, group=self.group)
         result = torch.cat(gathered, dim=dim)
-        if dim == 1:
-            assert self._original_seq_len is not None
+        if dim == 1 and self._original_seq_len is not None:
             result = result.narrow(dim, 0, self._original_seq_len)
         return result
