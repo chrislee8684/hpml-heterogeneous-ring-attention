@@ -357,11 +357,26 @@ def _compute_attention_ring_pass_kv(
                 max_score = torch.zeros((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
                 did_diag_compute = True
             else:
-                # Off-diagonal: use naive attention with proper masking
+                # Off-diagonal: Flash-style block softmax (stats-based)
                 key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
-                mask_slice = mask[..., q_start:q_start + num_valid_tokens, block_offset:block_offset + cur_len] if mask is not None else None
-                attn_weights = _attn_scores(q_cast, cur_k, query_indices, key_indices, scale, mask_slice, causal)
-                numerator, denominator, max_score = _online_softmax_update(attn_weights, cur_v, numerator, denominator, max_score)
+                mask_slice = (
+                    mask[..., q_start:q_start + num_valid_tokens,
+                            block_offset:block_offset + cur_len]
+                    if mask is not None else None
+                )
+
+                # TEMP: naive block stats (later replaced by CUDA kernel)
+                z_block, l_block, m_block = _block_softmax_stats_naive(
+                    q_cast, cur_k, cur_v,
+                    query_indices, key_indices,
+                    scale, mask_slice, causal
+                )
+
+                numerator, denominator, max_score = _online_softmax_merge_stats(
+                    z_block, l_block, m_block,
+                    numerator, denominator, max_score
+                )
+
                 did_offdiag_compute = True
 
         # Record compute end event on DEFAULT stream
@@ -491,3 +506,83 @@ def print_timing_summary(rank: int = 0):
         print(f"  comm hidden behind compute")
     else:
         print(f"  comm is bottleneck")
+
+
+def _online_softmax_merge_stats(
+    z_block: Tensor,      # [B, H, Q, D_v]
+    l_block: Tensor,      # [B, H, Q, 1]
+    m_block: Tensor,      # [B, H, Q, 1]
+    numerator: Tensor,    # [B, H, Q, D_v]
+    denominator: Tensor,  # [B, H, Q, 1]
+    prev_max_score: Tensor,  # [B, H, Q, 1]
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """
+    Merge a new block's softmax stats (z_block, l_block, m_block)
+    into global (numerator, denominator, prev_max_score).
+    """
+    # new global max per query
+    new_max = torch.maximum(prev_max_score, m_block)
+
+    # correction factors
+    corr_prev  = torch.exp(prev_max_score - new_max)   # for old accumulators
+    corr_block = torch.exp(m_block - new_max)          # for this block
+
+    # merge
+    numerator   = numerator * corr_prev  + z_block * corr_block
+    denominator = denominator * corr_prev + l_block * corr_block
+
+    return numerator, denominator, new_max
+
+def _block_softmax_stats_naive(
+    Q: Tensor,           # [B, H, Q_block, D_k]
+    K: Tensor,           # [B, H, K_block, D_k]
+    V: Tensor,           # [B, H, K_block, D_v]
+    query_indices: Tensor,  # [Q_block] global positions
+    key_indices: Tensor,    # [K_block] global positions
+    scale: float,
+    mask: Optional[Tensor],
+    causal: bool,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """
+    Compute per-query block stats:
+        m_block: max logits in this block
+        l_block: sum_j exp(S_ij - m_block_i)
+        z_block: sum_j exp(S_ij - m_block_i) * V_j
+    using a naive matmul implementation.
+
+    This is slow but matches the math. Later, replace internals with a CUDA Flash-style kernel.
+    """
+    B, H, Q_len, Dk = Q.shape
+    K_len = K.shape[2]
+    Dv = V.shape[-1]
+
+    if Q_len == 0 or K_len == 0:
+        m_block = Q.new_full((B, H, Q_len, 1), float("-inf"))
+        l_block = Q.new_zeros((B, H, Q_len, 1))
+        z_block = Q.new_zeros((B, H, Q_len, Dv))
+        return z_block, l_block, m_block
+
+    # 1. logits
+    scores = torch.matmul(Q / scale, K.transpose(-2, -1))  # [B, H, Q_len, K_len]
+
+    # 2. apply mask (padding + causal)
+    if mask is not None:
+        scores = scores + mask.to(scores.dtype)
+
+    if causal:
+        # future positions: key_idx > query_idx
+        future_mask = (key_indices[None, :] > query_indices[:, None])  # [Q_len, K_len]
+        future_mask = future_mask.unsqueeze(0).unsqueeze(0)            # [1,1,Q,K]
+        scores = scores.masked_fill(future_mask, float("-inf"))
+
+    # 3. m_block: per-query max
+    m_block = scores.max(dim=-1, keepdim=True).values  # [B,H,Q,1]
+
+    # 4. l_block: per-query sumexp
+    exp_scores = torch.exp(scores - m_block)           # [B,H,Q,K]
+    l_block = exp_scores.sum(dim=-1, keepdim=True)     # [B,H,Q,1]
+
+    # 5. z_block: per-query weighted sum of V
+    z_block = torch.matmul(exp_scores, V)              # [B,H,Q,Dv]
+
+    return z_block, l_block, m_block
