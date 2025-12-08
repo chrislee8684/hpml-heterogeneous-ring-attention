@@ -13,7 +13,7 @@ from fms.distributed.strategy import (
     RingAttentionStrategy,
     TensorParallelStrategy,
 )
-from fms.models.llama_ring import RingAttentionKernel, ring_forward # Import the new kernel
+from fms.distributed.ring_attention import ring_forward
 
 
 from fms.modules.attention import MultiHeadAttention
@@ -492,7 +492,6 @@ _8b_llama3_1_config = LLaMAConfig(
     rope_theta=500_000.0,
 )
 
-#not working
 _1b_llama3_config = LLaMAConfig(
     src_vocab_size=128256,
     emb_dim=2048,
@@ -504,7 +503,7 @@ _1b_llama3_config = LLaMAConfig(
     multiple_of=1,  
     max_expected_seq_len=131072,  
     rope_theta=500_000.0,
-    tie_heads=True,  
+    tie_heads=False,  
 )
 
 # Granite configs

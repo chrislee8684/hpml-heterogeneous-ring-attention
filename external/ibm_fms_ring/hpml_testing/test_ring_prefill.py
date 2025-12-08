@@ -30,7 +30,12 @@ def main():
 
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
+    if "CUDA_MPS_ACTIVE_THREAD_PERCENTAGE" in os.environ:
+        print(f"Rank {rank}: Detected CUDA_MPS_ACTIVE_THREAD_PERCENTAGE={os.environ['CUDA_MPS_ACTIVE_THREAD_PERCENTAGE']}%\n")
 
+        # Import after dist init
+    from fms.distributed.strategy import RingAttentionStrategy
+    from fms.distributed.ring_attention import _compute_attention_ring_pass_kv
     # -----------------------------
     # Per-rank "speed" from MPS
     # -----------------------------

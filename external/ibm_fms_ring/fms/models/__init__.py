@@ -376,8 +376,6 @@ def get_model(
     elif distributed_strategy == "mp":
         initial_device = torch.device("cpu")
     elif distributed_strategy == "ring":
-        print("using RingAttentionStrategy")
-        extra_args["distributed_strategy"] = RingAttentionStrategy(group=group)
         initial_device = device
     else:
         initial_device = device
@@ -413,6 +411,9 @@ def get_model(
             extra_args["distributed_strategy"] = UniformModelParallelStrategy(
                 devices, _guess_num_layers(lazy_sd)
             )
+        elif distributed_strategy == "ring":
+            print("using RingAttentionStrategy")
+            extra_args["distributed_strategy"] = RingAttentionStrategy(group=group)
 
     # Create the model on meta device to allocate weights lazily
     fms_model = _get_model_instance(
