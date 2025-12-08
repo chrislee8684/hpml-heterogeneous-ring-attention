@@ -355,7 +355,7 @@ def _compute_attention_ring_pass_kv(
                 numerator = flash_out.to(accum_dtype)
                 denominator = torch.ones((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
                 max_score = torch.zeros((batch_size, nheads, num_valid_tokens, 1), device=q.device, dtype=accum_dtype)
-                did_diag_compute
+                did_diag_compute = True
             else:
                 # Off-diagonal: use naive attention with proper masking
                 key_indices = torch.arange(block_offset, block_offset + cur_len, device=q.device)
@@ -421,8 +421,7 @@ def _compute_attention_ring_pass_kv(
 
         print(f"\n[Ring Attention layer={current_layer}] tokens={num_valid_tokens}, world_size={strategy.world_size}")
         print(f"  comm: {total_comm_time_ms:6.2f}ms | compute: {total_compute_time_ms:6.2f}ms")
-        print(f"  compute: {total_compute_time_ms:6.2f} ms "
-              f"(diag: {total_diag_compute_ms:6.2f} ms, offdiag: {total_offdiag_compute_ms:6.2f} ms)")
+        print(f"diag: {total_diag_compute_ms:6.2f} ms, offdiag: {total_offdiag_compute_ms:6.2f} ms")
         print(f"  data: {total_bytes_transferred/1e6:.2f} MB | bandwidth: {comm_bandwidth_gbps:.2f} GB/s")
         if total_comm_time_ms < total_compute_time_ms:
             print(f"  comm hidden behind compute")
