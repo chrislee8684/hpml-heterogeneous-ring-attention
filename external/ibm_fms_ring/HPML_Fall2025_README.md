@@ -13,18 +13,27 @@
     - Ring attention loop with async comm/compute overlap
     - Uses online softmax to accumulate attention across KV blocks from different GPUs
     - Diagonal blocks use `F.scaled_dot_product_attention` (FlashAttention when available)
-    - Off-diagonal blocks use naive attention with causal masking
-    - CUDA event-based timing to measure comm vs compute time per stream
+    - Off-diagonal blocks use a custom Triton kernel that computes block-wise softmax statistics (`z`, `l`, `m`) and fuses QKᵀ, softmax, and V into a single pass, with a naive PyTorch fallback for small blocks
+    - CUDA event-based timing to measure comm vs compute time per stream (including separate diag / off-diag timings)
 
-3. `scripts/llama_ring_sg/benchmark_ring.py`
+3. `fms/distributed/triton_offdiag_block.py`
+    - Triton implementation for off-diagonal attention blocks
+    - Tiles over queries and keys (BLOCK_Q × BLOCK_K) and returns block-wise softmax stats used by the ring online softmax
+    - Enabled only when the block size is large enough; small blocks fall back to the naive PyTorch implementation
+
+4. `scripts/llama_ring_sg/benchmark_ring.py`
     - Benchmarks Ring Attention vs Regular Attention
     - `--disable_flash` flag to use naive attention for fair comparison
     - `--num_tokens` to set prompt length
     - Outputs TTFT, decode time to CSV
 
-4. `hpml_testing/run_all_benchmarks.sh`
+5. `hpml_testing/run_all_benchmarks.sh`
     - Runs benchmarks across token counts (256, 512, 1024, 4096)
     - Outputs results to `hpml_testing/benchmark_results/summary_<timestamp>.csv`
+
+6. `hpml_testing/benchmark_ring_heterogeneous.sh`
+    - Benchmarks ring attention on heterogeneous GPUs with even vs proportional sharding
+    - Reports per-layer comm, diag, and off-diag compute times and supports long-context experiments via the `SEQ_LEN` environment variable
 
 ## Usage
 
@@ -48,4 +57,4 @@ cd hpml-heterogeneous-ring-attention/external/ibm_fms_ring/hpml_testing
 
 # Runs Ring attention and regular attention and compares both
 # File will have to be modified with correct parameters such as model and tokenizer path
-sbatch hpml_testing/run_all_benchmarks.sh
+sbatch hpml_testing/run_all_benchmarks.sh```
