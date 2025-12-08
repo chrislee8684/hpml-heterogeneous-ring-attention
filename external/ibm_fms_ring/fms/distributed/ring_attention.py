@@ -437,7 +437,7 @@ def _compute_attention_ring_pass_kv(
     _total_bytes += total_bytes_transferred
 
     # Print timing (only rank 0, first layer only)
-    if PROFILE and strategy.rank == 0 and should_print:
+    if PROFILE and strategy.rank == 1 and should_print:
         comm_bandwidth_gbps = (total_bytes_transferred / 1e9) / (total_comm_time_ms / 1000) if total_comm_time_ms > 0 else 0
 
         print(f"\n[Ring Attention layer={current_layer}] tokens={num_valid_tokens}, world_size={strategy.world_size}")
