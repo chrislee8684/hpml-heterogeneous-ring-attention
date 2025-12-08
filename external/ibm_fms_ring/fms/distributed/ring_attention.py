@@ -394,6 +394,8 @@ def _compute_attention_ring_pass_kv(
     # Calculate actual times from CUDA events
     total_comm_time_ms = 0.0
     total_compute_time_ms = 0.0
+    total_offdiag_compute_ms = 0.0
+    total_diag_compute_ms = 0.0
 
     for start_evt, end_evt in comm_events:
         total_comm_time_ms += start_evt.elapsed_time(end_evt)
