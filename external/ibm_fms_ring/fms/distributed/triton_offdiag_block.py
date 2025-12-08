@@ -2,16 +2,6 @@ import triton
 import triton.language as tl
 import torch
 
-# Triton will benchmark configs for that (Q_LEN, K_LEN) and cache the best one.
-@triton.autotune(
-    configs=[
-        triton.Config({'BLOCK_Q': 32, 'BLOCK_K': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_Q': 64, 'BLOCK_K': 64}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_Q': 32, 'BLOCK_K': 128}, num_warps=4, num_stages=2),
-    ],
-    key=['Q_LEN', 'K_LEN']
-)
-
 
 @triton.jit
 def _offdiag_block_stats_kernel(
