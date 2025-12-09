@@ -5,8 +5,8 @@ set -e
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
 # Heterogeneous MPS slowdown settings (same meaning as your existing script)
-STRONG_GPU_PERCENTAGE=${STRONG_GPU_PERCENTAGE:-10}
-WEAK_GPU_PERCENTAGE=${WEAK_GPU_PERCENTAGE:-100}
+STRONG_GPU_PERCENTAGE=${STRONG_GPU_PERCENTAGE:-100}
+WEAK_GPU_PERCENTAGE=${WEAK_GPU_PERCENTAGE:-10}
 
 # Sequence lengths to test (edit this list as you like)
 SEQ_LENS=(256 512 1024 2048 4096 8192 16384 32768 65536)
