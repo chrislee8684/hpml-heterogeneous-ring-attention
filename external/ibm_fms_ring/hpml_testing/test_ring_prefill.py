@@ -153,13 +153,14 @@ def main():
     dist.all_reduce(elapsed_tensor, op=dist.ReduceOp.MAX)
     global_max_elapsed = elapsed_tensor.item()
 
-    if rank == 0:
-        print("\n--- Benchmark Summary (global) ---")
-        print(f"GPUs: {world_size}")
-        print(f"Total seq_len: {total_seq_len}")
-        print(f"Local seq_len (rank 0): {local_seq_len}")
-        print(f"Global max time per call: {global_max_elapsed:.2f} ms")
-        print("--- End Summary ---\n")
+    # if rank == 0:
+    #     print("\n--- Benchmark Summary (global) ---")
+    #     print(f"GPUs: {world_size}")
+    #     print(f"Total seq_len: {total_seq_len}")
+    #     print(f"Local seq_len (rank 0): {local_seq_len}")
+    #     print(f"Global max time per call: {global_max_elapsed:.2f} ms")
+    #     print("--- End Summary ---\n")
+    
     # if rank == 0:
     #     print("\n--- Benchmark Summary ---")
     #     print(f"GPUs: {world_size}")
