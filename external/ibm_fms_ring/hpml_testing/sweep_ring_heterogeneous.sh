@@ -9,7 +9,7 @@ STRONG_GPU_PERCENTAGE=${STRONG_GPU_PERCENTAGE:-10}
 WEAK_GPU_PERCENTAGE=${WEAK_GPU_PERCENTAGE:-100}
 
 # Sequence lengths to test (edit this list as you like)
-SEQ_LENS=(8192 16384 32768 65536)
+SEQ_LENS=(256 512 1024 4096 8192 16384 32768 65536)
 
 export WORLD_SIZE=2
 export MASTER_ADDR='localhost'
@@ -28,14 +28,14 @@ printf "%-8s  %-12s  %-12s  %-12s\n" "seq_len" "even_ms" "prop_ms" "prop/even"
 echo "-------------------------------------------------------------"
 
 for SEQ_LEN in "${SEQ_LENS[@]}"; do
-    echo "================ SEQ_LEN = $SEQ_LEN ================"
+    # echo "================ SEQ_LEN = $SEQ_LEN ================"
 
     ########################################
     # 1) EVEN SHARDING
     ########################################
-    echo "[Even] Starting benchmark with total sequence length: $SEQ_LEN"
-    echo "Rank 0 MPS: $STRONG_GPU_PERCENTAGE%"
-    echo "Rank 1 MPS: $WEAK_GPU_PERCENTAGE%"
+    # echo "[Even] Starting benchmark with total sequence length: $SEQ_LEN"
+    # echo "Rank 0 MPS: $STRONG_GPU_PERCENTAGE%"
+    # echo "Rank 1 MPS: $WEAK_GPU_PERCENTAGE%"
 
     TMP_OUT=$(mktemp)
 
@@ -56,17 +56,17 @@ for SEQ_LEN in "${SEQ_LENS[@]}"; do
     # Extract the Global max time line (only printed by rank 0)
     EVEN_TIME=$(grep "Global max time per call" "$TMP_OUT" | awk 'NR==1 {print $(NF-1)}')
 
-    echo "[Even] Global max time per call: ${EVEN_TIME} ms"
-    echo
+    # echo "[Even] Global max time per call: ${EVEN_TIME} ms"
+    # echo
 
     ########################################
     # 2) PROPORTIONAL SHARDING
     ########################################
     : > "$TMP_OUT"  # truncate the temp file
 
-    echo "[Proportional] Starting benchmark with total sequence length: $SEQ_LEN"
-    echo "Rank 0 MPS: $STRONG_GPU_PERCENTAGE%"
-    echo "Rank 1 MPS: $WEAK_GPU_PERCENTAGE%"
+    # echo "[Proportional] Starting benchmark with total sequence length: $SEQ_LEN"
+    # echo "Rank 0 MPS: $STRONG_GPU_PERCENTAGE%"
+    # echo "Rank 1 MPS: $WEAK_GPU_PERCENTAGE%"
 
     # Rank 0
     export RANK=0
@@ -84,8 +84,8 @@ for SEQ_LEN in "${SEQ_LENS[@]}"; do
 
     PROP_TIME=$(grep "Global max time per call" "$TMP_OUT" | awk 'NR==1 {print $(NF-1)}')
 
-    echo "[Proportional] Global max time per call: ${PROP_TIME} ms"
-    echo
+    # echo "[Proportional] Global max time per call: ${PROP_TIME} ms"
+    # echo
 
     rm -f "$TMP_OUT"
 
