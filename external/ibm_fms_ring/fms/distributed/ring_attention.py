@@ -9,7 +9,7 @@ from fms.modules.attention import MultiHeadAttention
 from fms.distributed.strategy import DistributedStrategy, RingAttentionStrategy
 
 # Use Triton only when block size is big enough (Q_len*K_len)
-_TRITON_MIN_WORK = 0  # or 16384, tune based on your profiling
+_TRITON_MIN_WORK = 300  # or 16384, tune based on your profiling
 
 try:
     from .triton_offdiag_block import block_softmax_stats_triton
@@ -613,7 +613,7 @@ def _block_softmax_stats(
     if _HAS_TRITON and Q.is_cuda:
         work = Q.shape[2] * K.shape[2]  # Q_block_len * K_block_len
 
-        if work < _TRITON_MIN_WORK:
+        if work <= _TRITON_MIN_WORK:
             # too small to benefit from Triton – kernel launch overhead dominates
             return _block_softmax_stats_naive(
                 Q, K, V, query_indices, key_indices, scale, mask, causal
